@@ -1,0 +1,21 @@
+# Build artifacts
+.build/
+dist/
+*.o
+*.dSYM/
+
+# Generated icon assets (Scripts/make_icns.sh regenerates these)
+Assets/AppIcon.iconset/
+Assets/Relay.icns
+Assets/icon_1024.png
+
+# Editor / system
+.DS_Store
+Icon?
+.freebuff/
+.icon_preview.html
+
+# Xcode clutter (if a project is ever added)
+xcuserdata/
+DerivedData/
+*.xcuserstate
