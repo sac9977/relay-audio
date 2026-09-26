@@ -98,6 +98,10 @@ final class RelayController: ObservableObject {
     /// Receivers found on the local network via Bonjour.
     @Published private(set) var discoveredReceivers: [DiscoveredReceiver] = []
     @Published private(set) var discoveryBrowsing = false
+    /// 4-digit pairing code shown while streaming; sources pair with it.
+    @Published private(set) var pairingCode: String = ""
+    /// Live info about a bridge source paired with the code, if any.
+    @Published private(set) var bridgeSourceInfo: BridgeAudioSource.SourceInfo?
 
     static let autoStartKey = "autoStartOnLaunch"
     static let thisMacUID = "__thisMac"
@@ -116,6 +120,7 @@ final class RelayController: ObservableObject {
     private var deviceByUID: [String: AudioOutputDevice] = [:]
     private var meterTimer: Timer?
     private let discovery = ReceiverDiscovery()
+    private let bridge = BridgeAudioSource()
     private let log = Logger(subsystem: "app.relay", category: "controller")
 
     private let defaults = UserDefaults.standard
@@ -314,6 +319,11 @@ final class RelayController: ObservableObject {
         if snap.receivers != discoveredReceivers { discoveredReceivers = snap.receivers }
         if snap.browsing != discoveryBrowsing { discoveryBrowsing = snap.browsing }
 
+        // Bridge source info (publishes on change only).
+        let info = bridge.currentInfo
+        let shown = info.deviceName.isEmpty ? nil : info
+        if shown != bridgeSourceInfo { bridgeSourceInfo = shown }
+
         guard isStreaming else {
             if !healthByUID.isEmpty { healthByUID = [:] }
             if silenceSeconds != 0 { silenceSeconds = 0 }
@@ -426,6 +436,20 @@ final class RelayController: ObservableObject {
     /// One-click add of a Bonjour-discovered receiver.
     func addDiscoveredReceiver(_ receiver: DiscoveredReceiver) {
         addReceiver(host: receiver.host)
+    }
+
+    /// Join-by-code: matches the typed 4 digits against receivers' advertised
+    /// codes and adds every match (a fresh receiver regenerates its code on
+    /// launch, so a stale one simply doesn't match). Returns matched names.
+    @discardableResult
+    func addReceiverByCode(_ code: String) -> [String] {
+        let typed = code.trimmingCharacters(in: .whitespaces)
+        guard typed.count == 4, typed.allSatisfy(\.isNumber) else { return [] }
+        let matches = discoveredReceivers.filter { $0.code == typed }
+        for match in matches where !receiverHosts.contains(match.host) {
+            addReceiver(host: match.host)
+        }
+        return matches.map(\.name)
     }
 
     func removeReceiver(host: String) {
@@ -557,11 +581,14 @@ final class RelayController: ObservableObject {
         sinks = []
         for net in networkSinks { net.stop() }
         networkSinks = []
+        bridge.stop()
         ringByUID = [:]
         level = 0
         healthByUID = [:]
         offsetHistoryByUID = [:]
         networkStatsByUID = [:]
+        bridgeSourceInfo = nil
+        pairingCode = ""
         transportState = .stopped
     }
 
@@ -646,6 +673,15 @@ final class RelayController: ObservableObject {
         }
 
         transportState = .streaming
+
+        // Bridge: accept a 4-digit-coded source (iPhone / Satellite sender)
+        // while streaming. The code rotates every stream for freshness.
+        pairingCode = Self.makePairingCode()
+        bridge.start(code: pairingCode)
+    }
+
+    private static func makePairingCode() -> String {
+        String(format: "%04d", Int(arc4random_uniform(10_000)))
     }
 
     private func rebuildSinks() {

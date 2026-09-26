@@ -39,6 +39,22 @@ for i in 0..<samples.count where decodedSamples[i] != samples[i] {
     exit(1)
 }
 
+// Pairing packet round trips.
+let pairReq = SatelliteProtocol.encodePairRequest(code: "4821", deviceName: "Sachin's iPhone")
+guard let decodedPair = SatelliteProtocol.decodePairRequest(pairReq) else {
+    print("FAIL: decodePairRequest returned nil")
+    exit(1)
+}
+assert(decodedPair.code == "4821", "pair code mismatch: \(decodedPair.code)")
+assert(decodedPair.deviceName == "Sachin's iPhone", "pair name mismatch")
+
+let pairOK = SatelliteProtocol.encodePairOK(streamID: 987_654)
+guard let decodedOK = SatelliteProtocol.decodePairOK(pairOK) else {
+    print("FAIL: decodePairOK returned nil")
+    exit(1)
+}
+assert(decodedOK == 987_654, "pairOK streamID mismatch")
+
 // NACK round trip.
 let nack = SatelliteProtocol.encodeNack(streamID: 7, missingSequence: 12345, count: 8)
 guard let decodedNack = SatelliteProtocol.decodeNack(nack) else {
@@ -87,4 +103,4 @@ for i in 0..<samples.count where v1Samples[i] != samples[i] {
     exit(1)
 }
 
-print("PASS: v2 data packet (\(packet.count) B, 44.1 kHz declared) + v1 fallback (\(v1Packet.count) B → 48 kHz) + NACK round-trip; samples bit-exact")
+print("PASS: v2 data packet (\(packet.count) B, 44.1 kHz declared) + v1 fallback (\(v1Packet.count) B → 48 kHz) + pair/NACK round-trips; samples bit-exact")

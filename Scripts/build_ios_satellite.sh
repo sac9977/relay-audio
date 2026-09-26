@@ -43,11 +43,14 @@ cat > "${APP_DIR}/Info.plist" <<PLIST
     <key>MinimumOSVersion</key>           <string>17.0</string>
     <key>UILaunchScreen</key>             <dict/>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Relay Satellite receives lossless audio from Relay on your network and announces itself so Relay can find it automatically.</string>
+    <string>Relay Satellite receives lossless audio from Relay on your network, announces itself so Relay can find it, and can cast this device's microphone to a Relay Mac using a 4-digit pairing code.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_relay-sat._udp</string>
+        <string>_relay-bridge._udp</string>
     </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Relay Satellite can cast this device's microphone to Relay on your Mac so its audio plays on every speaker in your sync group.</string>
 </dict>
 </plist>
 PLIST

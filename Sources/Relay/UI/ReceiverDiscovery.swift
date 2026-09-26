@@ -11,6 +11,8 @@ struct DiscoveredReceiver: Identifiable, Equatable {
     let name: String
     /// Resolved IPv4/IPv6 address string to send audio to.
     let host: String
+    /// 4-digit pairing code from the receiver's TXT record (nil if absent).
+    let code: String?
 
     static func == (lhs: DiscoveredReceiver, rhs: DiscoveredReceiver) -> Bool { lhs.id == rhs.id }
 }
@@ -28,8 +30,8 @@ final class ReceiverDiscovery {
     private let queue = DispatchQueue(label: "app.relay.discovery", qos: .userInitiated)
     private let lock = NSLock()
 
-    /// id → (name, resolved host or nil while still resolving)
-    private var known: [String: (name: String, host: String?)] = [:]
+    /// id → (name, resolved host or nil while still resolving, advertised code)
+    private var known: [String: (name: String, host: String?, code: String?)] = [:]
 
     struct Snapshot {
         var receivers: [DiscoveredReceiver] = []
@@ -86,9 +88,18 @@ final class ReceiverDiscovery {
             guard case let .service(name, type, domain, _) = result.endpoint else { continue }
             let id = "\(name).\(type).\(domain)"
             seenIDs.insert(id)
+            let code: String?
+            if case let .bonjour(txtRecord) = result.metadata {
+                code = PairingCode.code(fromTXT: txtRecord)
+            } else {
+                code = nil
+            }
             lock.lock()
             let isNew = known[id] == nil
-            if isNew { known[id] = (name, nil) }
+            if isNew {
+                known[id] = (name, nil, nil)
+            }
+            known[id]?.code = code
             lock.unlock()
 
             if isNew {
@@ -156,7 +167,7 @@ final class ReceiverDiscovery {
         var receivers: [DiscoveredReceiver] = []
         for (id, entry) in known {
             guard let host = entry.host else { continue }
-            receivers.append(DiscoveredReceiver(id: id, name: entry.name, host: host))
+            receivers.append(DiscoveredReceiver(id: id, name: entry.name, host: host, code: entry.code))
         }
         receivers.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         snapshot.receivers = receivers

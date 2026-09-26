@@ -21,6 +21,12 @@ public enum SatelliteProtocol {
     public static let typeNack: UInt8 = 2
     public static let typeStats: UInt8 = 3
     public static let typePing: UInt8 = 4
+    public static let typePairRequest: UInt8 = 5
+    public static let typePairOK: UInt8 = 6
+
+    /// Bridge port: pairing requests land here; accepted sources then stream
+    /// raw PCM data packets to the same host on the standard receiver port.
+    public static let bridgePort: UInt16 = 51511
 
     // MARK: Data packet (sender → receiver)
     // v2: [magic u32][version u16][type u8][flags u8][streamID u32][seq u64]
@@ -100,7 +106,68 @@ public enum SatelliteProtocol {
         )
     }
 
-    // MARK: NACK (receiver → sender)
+    // MARK: Pairing (receiver/app → sender's bridge listener)
+    // [magic][version][type][flags][code0..3][deviceNameLen u8][deviceName…]
+    // A receiver proves possession of the 4-digit code shown in Relay's UI.
+
+    public static func encodePairRequest(code: String, deviceName: String) -> Data {
+        var packet = Data(capacity: 12 + deviceName.utf8.count)
+        var magic = Self.magic, version = Self.version, type = Self.typePairRequest
+        var flags: UInt8 = 0
+        withUnsafeBytes(of: &magic) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &version) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &type) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &flags) { packet.append(contentsOf: $0) }
+        // 4 ASCII digits, left-padded; codes are numeric strings.
+        let digits = code.utf8.prefix(4)
+        packet.append(contentsOf: digits)
+        while packet.count < 12 { packet.append(UInt8(0x30)) } // pad with '0'
+        let nameBytes = deviceName.utf8.prefix(255)
+        packet.append(UInt8(nameBytes.count))
+        packet.append(contentsOf: nameBytes)
+        return packet
+    }
+
+    public static func decodePairRequest(_ data: Data) -> (code: String, deviceName: String)? {
+        guard data.count >= 12 else { return nil }
+        func readLE<T: FixedWidthInteger>(_ type: T.Type, _ offset: Int) -> T {
+            data.subdata(in: offset..<offset + MemoryLayout<T>.size).withUnsafeBytes {
+                $0.loadUnaligned(as: T.self)
+            }
+        }
+        guard readLE(UInt32.self, 0) == magic,
+              readLE(UInt8.self, 6) == typePairRequest else { return nil }
+        let code = String(bytes: data.subdata(in: 8..<12), encoding: .ascii) ?? ""
+        let nameLen = Int(data[data.startIndex + 12])
+        guard data.count >= 13 + nameLen else { return nil }
+        let name = String(bytes: data.subdata(in: 13..<13 + nameLen), encoding: .utf8) ?? ""
+        return (code, name)
+    }
+
+    // [magic][version][typePairOK][flags][streamID u32]
+    // Stream ID the accepted source must use for its data packets.
+    public static func encodePairOK(streamID: UInt32) -> Data {
+        var packet = Data()
+        var magic = Self.magic, version = Self.version, type = Self.typePairOK
+        var flags: UInt8 = 0
+        var sid = streamID
+        withUnsafeBytes(of: &magic) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &version) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &type) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &flags) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &sid) { packet.append(contentsOf: $0) }
+        return packet
+    }
+
+    public static func decodePairOK(_ data: Data) -> UInt32? {
+        guard data.count == 12 else { return nil }
+        func readLE<T: FixedWidthInteger>(_ type: T.Type, _ offset: Int) -> T {
+            data.subdata(in: offset..<offset + MemoryLayout<T>.size).withUnsafeBytes { $0.loadUnaligned(as: T.self) }
+        }
+        guard readLE(UInt32.self, 0) == magic,
+              readLE(UInt8.self, 6) == typePairOK else { return nil }
+        return readLE(UInt32.self, 8)
+    }
     // [magic][version][type][flags][streamID u32][missingSeq u64][count u16]
 
     public static func encodeNack(streamID: UInt32, missingSequence: UInt64, count: UInt16) -> Data {

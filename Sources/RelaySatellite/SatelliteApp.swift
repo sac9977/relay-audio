@@ -188,19 +188,28 @@ final class SatelliteEngine {
     private var listening = false
     private var senderDescription: String?
     private var lastSenderEndpoint: NWEndpoint?
-    private var nackConnection: NWConnection?
+    /// The accepted data connection. NACKs MUST be sent through it: it shares
+    /// the listener's :51510 source port, and senders' connected sockets
+    /// filter datagrams by source — an ephemeral-port NACK never arrives.
+    private var dataConnection: NWConnection?
     private var currentVolume: Float = 1
+    /// 4-digit pairing code advertised in Bonjour; shown in the receiver UI.
+    let pairingCode = PairingCode.make()
 
     private let packetLock = NSLock()
     private var packetsBySequence: [UInt64: (producerFrame: UInt64, payload: Data)] = [:]
     private var expectedSequence: UInt64?
     private var latestProducerFrame: UInt64 = 0
     private var missingSince: [UInt64: DispatchTime] = [:]
+    /// Stream ID of the current sender — NACKs must echo it so the sender's
+    /// filter accepts them (a streamID-0 NACK is dropped by every sender).
+    private var activeStreamID: UInt32 = 0
 
     private var receivedPackets = 0
     private var concealedFrames = 0
     private var resendRequests = 0
     private var bufferedMs: Double = 0
+    private var lastDataAt: DispatchTime?
 
     private let samplesPerPacket = SatelliteProtocol.samplesPerPacket
     private let concealAfterMs = 90.0
@@ -269,10 +278,14 @@ final class SatelliteEngine {
             }
 
             // Advertise on the local network so Relay can discover this
-            // receiver without the user typing an IP address.
+            // receiver without the user typing an IP address. The 4-digit
+            // pairing code rides along in the TXT record: in Relay you type
+            // the code shown here instead of an IP, and only the receiver
+            // actually displaying that code matches.
             listener.service = NWListener.Service(
                 name: Self.advertisedName(),
-                type: SatelliteProtocol.bonjourServiceType
+                type: SatelliteProtocol.bonjourServiceType,
+                txtRecord: PairingCode.txtRecord(pairingCode)
             )
 
             listener.start(queue: .global(qos: .userInitiated))
@@ -297,8 +310,8 @@ final class SatelliteEngine {
         stopped = true
         listener?.cancel()
         listener = nil
-        nackConnection?.cancel()
-        nackConnection = nil
+        dataConnection?.cancel()
+        dataConnection = nil
         playerNode?.stop()
         engine?.stop()
         engine = nil
@@ -307,14 +320,31 @@ final class SatelliteEngine {
         packetLock.lock()
         packetsBySequence.removeAll()
         packetLock.unlock()
+        lastDataAt = nil
         publish()
         log.info("Satellite stopped")
     }
 
     private func accept(_ connection: NWConnection) {
-        senderDescription = connection.endpoint.debugDescription
+        let peer = connection.endpoint.debugDescription
+        log.info("Satellite peer connected: \(peer, privacy: .public)")
+        senderDescription = peer
         lastSenderEndpoint = connection.endpoint
+        // New peer: reset stream state (a restarted sender restarts at seq 0)
+        // and swap the NACK path to the new connection.
+        dataConnection?.cancel()
+        dataConnection = connection
+        packetLock.lock()
+        expectedSequence = nil
+        packetsBySequence.removeAll()
+        missingSince.removeAll()
+        packetLock.unlock()
         publish()
+        // CRITICAL: connections handed over by a listener must be started
+        // before receiveMessage delivers anything (Apple's EchoServer does
+        // this too). Without it the peer is "accepted" but every datagram
+        // silently queues forever.
+        connection.start(queue: .global(qos: .userInitiated))
         receiveLoop(on: connection)
     }
 
@@ -340,12 +370,26 @@ final class SatelliteEngine {
     private func receiveLoop(on connection: NWConnection) {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self, !self.stopped else { return }
+            if let data {
+                if let header = SatelliteProtocol.decodeDataPacket(data) {
+                    let rxCount = self.receivedPackets
+                    if rxCount % 25 == 0 {
+                        log.info("rx packet seq \(header.sequence, privacy: .public) (total \(rxCount + 1), privacy: .public)")
+                    }
+                } else {
+                    log.warning("rx undecodable datagram, \(data.count, privacy: .public) bytes")
+                }
+            } else if let error {
+                log.error("rx error: \(error.localizedDescription, privacy: .public)")
+            }
             if let data, let header = SatelliteProtocol.decodeDataPacket(data) {
                 let payload = data.subdata(in: header.payloadRange)
                 if abs(header.sampleRate - self.sampleRate) > 1 {
                     self.ensurePlaybackRate(header.sampleRate)
                 }
+                self.lastDataAt = DispatchTime.now()
                 self.packetLock.lock()
+                self.activeStreamID = header.streamID
                 if self.expectedSequence == nil { self.expectedSequence = header.sequence }
                 self.packetsBySequence[header.sequence] = (header.producerFrame, payload)
                 self.latestProducerFrame = max(self.latestProducerFrame, header.producerFrame)
@@ -423,6 +467,21 @@ final class SatelliteEngine {
             seq += 1
         }
 
+        // Stream idle watchdog: with no data for 2 s the sender is gone —
+        // stop concealing forward (the old behavior climbed expectedSequence
+        // forever and ignored any sender that restarted at seq 0).
+        if let last = lastDataAt,
+           DispatchTime.now().uptimeNanoseconds - last.uptimeNanoseconds > 2_000_000_000,
+           packetsBySequence.isEmpty {
+            log.info("Stream idle 2 s — awaiting a new sender")
+            expectedSequence = nil
+            missingSince.removeAll()
+            lastDataAt = nil
+            packetLock.unlock()
+            pumpQueue.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.pump() }
+            return
+        }
+
         // Gap handling: NACK promptly, conceal when too old.
         if filled < bufferFrames, packetsBySequence[seq] == nil {
             let now = DispatchTime.now()
@@ -442,7 +501,8 @@ final class SatelliteEngine {
                     missingSince.removeValue(forKey: seq)
                     seq += 1
                 } else {
-                    let nack = SatelliteProtocol.encodeNack(streamID: 0, missingSequence: seq, count: 8)
+                    let nack = SatelliteProtocol.encodeNack(streamID: activeStreamID, missingSequence: seq, count: 8)
+                    log.info("Pump NACKing seq \(seq, privacy: .public) stream \(self.activeStreamID, privacy: .public)")
                     sendNack(nack)
                     resendRequests += 1
                 }
@@ -465,12 +525,9 @@ final class SatelliteEngine {
     }
 
     private func sendNack(_ data: Data) {
-        if nackConnection == nil, let sender = lastSenderEndpoint {
-            let conn = NWConnection(to: sender, using: .udp)
-            conn.start(queue: .global(qos: .userInitiated))
-            nackConnection = conn
-        }
-        nackConnection?.send(content: data, completion: .contentProcessed { _ in })
+        // Reply on the accepted connection (same :51510 source port the
+        // sender's connected socket expects).
+        dataConnection?.send(content: data, completion: .contentProcessed { _ in })
     }
 }
 
@@ -487,6 +544,9 @@ final class SatelliteReceiver: ObservableObject {
     @Published private(set) var sampleRateHz: Double = 0
     @Published private(set) var textScale: AppFont.Scale = .comfortable
     @Published var volume: Float = 1 { didSet { engine.setVolume(volume) } }
+
+    /// Pairing code to enter in Relay's "join by code" field.
+    var pairingCode: String { engine.pairingCode }
 
     /// True while audio is actually flowing (buffer being drained), which is
     /// what the menu-bar glyph keys off.
@@ -618,6 +678,25 @@ struct ReceiverView: View {
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 260)
             }
+
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("PAIRING CODE")
+                        .font(AppFont.size(10.5, .bold))
+                        .foregroundStyle(.secondary)
+                    Text(receiver.pairingCode)
+                        .font(AppFont.size(21, .bold).monospacedDigit())
+                        .foregroundStyle(.teal)
+                        .tracking(3)
+                }
+                Spacer()
+                Text("type this in Relay\nto add this Mac")
+                    .font(AppFont.size(10.5))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
 
             Spacer()
 

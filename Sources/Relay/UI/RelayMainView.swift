@@ -130,6 +130,22 @@ private struct TransportCard: View {
                 .frame(width: 150)
                 .padding(10)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("PAIRING CODE")
+                        .font(AppFont.size(11, .bold))
+                        .foregroundStyle(.secondary)
+                    Text(controller.pairingCode)
+                        .font(AppFont.size(19, .bold).monospacedDigit())
+                        .foregroundStyle(.teal)
+                        .tracking(3)
+                    Text("enter on a sender to cast here")
+                        .font(AppFont.size(10.5))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9))
+                .help("Any Relay sender can pair with this code while you stream")
             }
         }
     }
@@ -553,6 +569,16 @@ private struct SatellitesCard: View {
     @EnvironmentObject private var controller: RelayController
     @State private var newHost = ""
     @State private var showAddField = false
+    @State private var codeField = ""
+    @State private var codeResult = ""
+
+    private func joinByCode() {
+        let matched = controller.addReceiverByCode(codeField)
+        codeResult = matched.isEmpty
+            ? "no receiver showing that code"
+            : "added \(matched.joined(separator: ", "))"
+        if !matched.isEmpty { codeField = "" }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -650,6 +676,11 @@ private struct SatellitesCard: View {
                             .frame(width: 24, height: 24)
                             .background(Color.secondary.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
                         Text(receiver.name).font(AppFont.size(15))
+                        if let code = receiver.code {
+                            Text("code \(code)")
+                                .font(AppFont.size(12).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                         Text(receiver.host)
                             .font(AppFont.size(13).monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -669,6 +700,35 @@ private struct SatellitesCard: View {
                     }
                 }
             }
+
+            // Join by code: type the 4 digits shown on the receiver.
+            HStack(spacing: 8) {
+                Image(systemName: "number")
+                    .font(AppFont.size(12, .semibold))
+                    .foregroundStyle(.teal)
+                TextField("Join by code — 4 digits", text: $codeField)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 150)
+                    .onSubmit { joinByCode() }
+                Button {
+                    joinByCode()
+                } label: {
+                    Text("Join")
+                        .font(AppFont.size(13, .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.teal)
+                .disabled(codeField.count < 4)
+                if !codeResult.isEmpty {
+                    Text(codeResult)
+                        .font(AppFont.size(11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.top, 2)
         }
         .padding(10)
         .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
