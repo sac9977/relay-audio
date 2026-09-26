@@ -79,6 +79,22 @@ estimator.record(sequence: 13, receivedSequence: 9) // gap of 4
 assert(abs(estimator.lossRate - 4.0 / 21.0) < 0.01, "gap of 4 should register, got \(estimator.lossRate)")
 assert(estimator.currentBurstLength() == 4, "burst should equal the gap, got \(estimator.currentBurstLength())")
 
+// Receiver stats beacon round trip (loss %, jitter depth, buffered ms).
+let statsPacket = SatelliteProtocol.encodeStats(
+    streamID: 0xC0FFEE,
+    sequence: 77,
+    stats: SatelliteProtocol.ReceiverStats(lossPermille: 23, jitterDepthPackets: 5, bufferedMs: 64)
+)
+guard let decodedStats = SatelliteProtocol.decodeStats(statsPacket) else {
+    print("FAIL: decodeStats returned nil")
+    exit(1)
+}
+assert(decodedStats.streamID == 0xC0FFEE, "stats streamID mismatch")
+assert(decodedStats.sequence == 77, "stats sequence mismatch")
+assert(decodedStats.stats.lossPermille == 23, "stats loss mismatch")
+assert(decodedStats.stats.jitterDepthPackets == 5, "stats depth mismatch")
+assert(decodedStats.stats.bufferedMs == 64, "stats buffered mismatch")
+
 // NACK round trip.
 let nack = SatelliteProtocol.encodeNack(streamID: 7, missingSequence: 12345, count: 8)
 guard let decodedNack = SatelliteProtocol.decodeNack(nack) else {
@@ -127,4 +143,4 @@ for i in 0..<samples.count where v1Samples[i] != samples[i] {
     exit(1)
 }
 
-print("PASS: v2 data packet + v1 fallback + pair/NACK round-trips + NetQ (adaptive jitter/loss) — samples bit-exact")
+print("PASS: v2 data + v1 fallback + pair/NACK/stats round-trips + NetQ — samples bit-exact")

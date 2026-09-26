@@ -24,6 +24,62 @@ public enum SatelliteProtocol {
     public static let typePairRequest: UInt8 = 5
     public static let typePairOK: UInt8 = 6
 
+    // MARK: Stats (receiver → sender, 1 Hz)
+    // [magic][version][type=3][flags][streamID u32][seq u64]
+    // [lossPermille u16][jitterDepthPackets u16][bufferedMs u16][reserved u16]
+    // Loss as permille so 0.1% resolution survives a u16.
+
+    public struct ReceiverStats {
+        public var lossPermille: UInt16
+        public var jitterDepthPackets: UInt16
+        public var bufferedMs: UInt16
+        public init(lossPermille: UInt16, jitterDepthPackets: UInt16, bufferedMs: UInt16) {
+            self.lossPermille = lossPermille
+            self.jitterDepthPackets = jitterDepthPackets
+            self.bufferedMs = bufferedMs
+        }
+    }
+
+    public static func encodeStats(streamID: UInt32, sequence: UInt64, stats: ReceiverStats) -> Data {
+        var packet = Data()
+        var magic = Self.magic, version = Self.version, type = Self.typeStats
+        var flags: UInt8 = 0
+        var streamID = streamID, sequence = sequence
+        var loss = stats.lossPermille, depth = stats.jitterDepthPackets
+        var buffered = stats.bufferedMs, reserved: UInt16 = 0
+        withUnsafeBytes(of: &magic) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &version) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &type) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &flags) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &streamID) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &sequence) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &loss) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &depth) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &buffered) { packet.append(contentsOf: $0) }
+        withUnsafeBytes(of: &reserved) { packet.append(contentsOf: $0) }
+        return packet
+    }
+
+    public static func decodeStats(_ data: Data) -> (streamID: UInt32, sequence: UInt64, stats: ReceiverStats)? {
+        guard data.count == 4 + 2 + 1 + 1 + 4 + 8 + 2 + 2 + 2 + 2 else { return nil }
+        func readLE<T: FixedWidthInteger>(_ type: T.Type, _ offset: Int) -> T {
+            data.subdata(in: offset..<offset + MemoryLayout<T>.size).withUnsafeBytes {
+                $0.loadUnaligned(as: T.self)
+            }
+        }
+        guard readLE(UInt32.self, 0) == magic,
+              readLE(UInt8.self, 6) == typeStats else { return nil }
+        return (
+            readLE(UInt32.self, 8),
+            readLE(UInt64.self, 12),
+            ReceiverStats(
+                lossPermille: readLE(UInt16.self, 20),
+                jitterDepthPackets: readLE(UInt16.self, 22),
+                bufferedMs: readLE(UInt16.self, 24)
+            )
+        )
+    }
+
     /// Bridge port: pairing requests land here; accepted sources then stream
     /// raw PCM data packets to the same host on the standard receiver port.
     public static let bridgePort: UInt16 = 51511

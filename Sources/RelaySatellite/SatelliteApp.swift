@@ -225,6 +225,32 @@ final class SatelliteEngine {
     private var lastAdaptiveUpdate: DispatchTime?
     private var lastResendRequests = 0
 
+    /// Latest measured loss rate (0…1) for snapshots and stats reporting.
+    private var lossRate: Double {
+        lossEstimatorLock.lock()
+        defer { lossEstimatorLock.unlock() }
+        return estimator.lossRate
+    }
+
+    /// 1 Hz stats beacon: tells the sender how the link looks from here.
+    private func sendStatsBeacon() {
+        guard let conn = dataConnection else { return }
+        let stats = SatelliteProtocol.ReceiverStats(
+            lossPermille: UInt16(min(1000, Int(lossRate * 1000))),
+            jitterDepthPackets: UInt16(adaptiveDepth),
+            bufferedMs: UInt16(min(65_535, Int(bufferedMs)))
+        )
+        statsSequence += 1
+        let packet = SatelliteProtocol.encodeStats(
+            streamID: activeStreamID,
+            sequence: statsSequence,
+            stats: stats
+        )
+        conn.send(content: packet, completion: .contentProcessed { _ in })
+    }
+    private var statsSequence: UInt64 = 0
+    private var lastStatsSend: DispatchTime?
+
     /// Stable Bonjour name for this receiver (the Mac's name). One service per
     /// host: Bonjour auto-uniquifies duplicates ("name (2)") if needed.
     static var serviceName: String {
@@ -247,6 +273,8 @@ final class SatelliteEngine {
         var resends = 0
         var bufferedMs: Double = 0
         var sampleRate: Double = 0
+        var lossPermille = 0
+        var jitterDepthPackets = 0
     }
 
     private let snapshotLock = NSLock()
@@ -259,7 +287,9 @@ final class SatelliteEngine {
             concealed: concealedFrames,
             resends: resendRequests,
             bufferedMs: bufferedMs,
-            sampleRate: sampleRate
+            sampleRate: sampleRate,
+            lossPermille: Int(lossRate * 1000),
+            jitterDepthPackets: adaptiveDepth
         )
         snapshotLock.unlock()
     }
@@ -535,6 +565,7 @@ final class SatelliteEngine {
                 adaptiveDepth = jitter.update(lostPackets: max(0, resendRequests - lastResendRequests), receivedPackets: receivedPackets, nowSeconds: dt)
                 lastResendRequests = resendRequests
                 lossEstimatorLock.unlock()
+                sendStatsBeacon()
             }
         } else {
             lastAdaptiveUpdate = DispatchTime.now()

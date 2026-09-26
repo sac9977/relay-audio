@@ -37,6 +37,10 @@ final class NetworkSinkEngine {
         var sent: Int = 0
         var resent: Int = 0
         var connected: Bool = false
+        /// Receiver-reported link quality (0 when no stats beacon yet).
+        var lossPermille: Int = 0
+        var jitterDepthPackets: Int = 0
+        var receiverBufferedMs: Int = 0
     }
     private let statsLock = NSLock()
     private var currentStats = Stats()
@@ -113,8 +117,16 @@ final class NetworkSinkEngine {
     private func receiveLoop() {
         connection?.receiveMessage { [weak self] data, _, _, error in
             guard let self, !self.stopped else { return }
-            if let data, let nack = SatelliteProtocol.decodeNack(data) {
-                self.handleNack(nack)
+            if let data {
+                if let nack = SatelliteProtocol.decodeNack(data) {
+                    self.handleNack(nack)
+                } else if let stats = SatelliteProtocol.decodeStats(data), stats.streamID == self.streamID {
+                    self.statsLock.lock()
+                    self.currentStats.lossPermille = Int(stats.stats.lossPermille)
+                    self.currentStats.jitterDepthPackets = Int(stats.stats.jitterDepthPackets)
+                    self.currentStats.receiverBufferedMs = Int(stats.stats.bufferedMs)
+                    self.statsLock.unlock()
+                }
             }
             if error == nil {
                 self.receiveLoop()

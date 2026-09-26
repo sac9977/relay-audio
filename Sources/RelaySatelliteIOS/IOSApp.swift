@@ -244,6 +244,24 @@ final class IOSReceiverEngine {
     private var adaptiveDepth: Int = 2
     private var lastAdaptiveUpdate: DispatchTime?
     private var lastResendRequests = 0
+    private var measuredLossPermille = 0
+    private var statsSequence: UInt64 = 0
+    private var lastStatsSendAt: DispatchTime?
+
+    /// 1 Hz stats beacon (same wire format as the macOS receiver).
+    private func sendStatsBeacon() {
+        guard let conn = dataConnection else { return }
+        let stats = SatelliteProtocol.ReceiverStats(
+            lossPermille: UInt16(min(1000, measuredLossPermille)),
+            jitterDepthPackets: UInt16(adaptiveDepth),
+            bufferedMs: UInt16(min(65_535, Int(bufferedMs)))
+        )
+        statsSequence += 1
+        conn.send(
+            content: SatelliteProtocol.encodeStats(streamID: activeStreamID, sequence: statsSequence, stats: stats),
+            completion: .contentProcessed { _ in }
+        )
+    }
 
     struct Snapshot {
         var listening = false
@@ -254,6 +272,8 @@ final class IOSReceiverEngine {
         var resends = 0
         var bufferedMs: Double = 0
         var sampleRate: Double = 0
+        var lossPermille = 0
+        var jitterDepthPackets = 0
     }
 
     private let snapshotLock = NSLock()
@@ -267,7 +287,9 @@ final class IOSReceiverEngine {
             concealed: concealedFrames,
             resends: resendRequests,
             bufferedMs: bufferedMs,
-            sampleRate: sampleRate
+            sampleRate: sampleRate,
+            lossPermille: measuredLossPermille,
+            jitterDepthPackets: adaptiveDepth
         )
         snapshotLock.unlock()
     }
@@ -502,8 +524,13 @@ final class IOSReceiverEngine {
             let dt = Double(DispatchTime.now().uptimeNanoseconds - last.uptimeNanoseconds) / 1e9
             if dt >= 1.0 {
                 lastAdaptiveUpdate = DispatchTime.now()
-                adaptiveDepth = jitter.update(lostPackets: max(0, resendRequests - lastResendRequests), receivedPackets: receivedPackets, nowSeconds: dt)
+                let lostNow = max(0, resendRequests - lastResendRequests)
+                adaptiveDepth = jitter.update(lostPackets: lostNow, receivedPackets: receivedPackets, nowSeconds: dt)
                 lastResendRequests = resendRequests
+                // Approximate loss rate from the resend share of traffic.
+                let total = receivedPackets + resendRequests
+                measuredLossPermille = total > 0 ? Int(Double(resendRequests) / Double(total) * 1000) : 0
+                sendStatsBeacon()
             }
         } else {
             lastAdaptiveUpdate = DispatchTime.now()
@@ -630,8 +657,8 @@ struct IOSReceiverView: View {
 
             HStack(spacing: 20) {
                 stat("packets", "\(receiver.snap.received)")
-                stat("concealed", "\(receiver.snap.concealed)")
-                stat("resends", "\(receiver.snap.resends)")
+                stat("loss", String(format: "%.1f%%", Double(receiver.snap.lossPermille) / 10))
+                stat("jitter buf", "\(receiver.snap.jitterDepthPackets) pk")
                 stat("buffer", String(format: "%.0f ms", receiver.snap.bufferedMs))
             }
             .padding(.vertical, 10)

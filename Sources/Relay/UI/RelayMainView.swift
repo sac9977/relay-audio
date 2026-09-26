@@ -644,6 +644,14 @@ private struct SatellitesCard: View {
                                     .font(AppFont.size(11.5).monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
+                            if stats.jitterDepthPackets > 0 || stats.lossPermille > 0 {
+                                Text(String(format: "loss %.1f%% · jitter %d pk · rx %d ms",
+                                            Double(stats.lossPermille) / 10,
+                                            stats.jitterDepthPackets,
+                                            stats.receiverBufferedMs))
+                                    .font(AppFont.size(11.5).monospacedDigit())
+                                    .foregroundStyle(stats.lossPermille > 30 ? Color.orange : Color.secondary)
+                            }
                         }
                         Spacer()
                         Button {

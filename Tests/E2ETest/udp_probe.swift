@@ -22,6 +22,8 @@ var sent = 0
 var receivedNack = false
 var nackForGap = false
 var nacksSeen = 0
+var receivedStats = false
+var lastStats: SatelliteProtocol.ReceiverStats?
 
 conn.stateUpdateHandler = { state in
     if case .failed(let error) = state {
@@ -33,14 +35,21 @@ conn.start(queue: queue)
 
 func armReceive() {
     conn.receiveMessage { data, _, _, _ in
-        if let data, let nack = SatelliteProtocol.decodeNack(data), nack.streamID == streamID {
-            lock.lock()
-            nacksSeen += 1
-            receivedNack = true
-            let coversGap = UInt64(gapSequence) >= nack.missingSequence &&
-                            UInt64(gapSequence) < nack.missingSequence + UInt64(nack.count)
-            if coversGap { nackForGap = true }
-            lock.unlock()
+        if let data {
+            if let nack = SatelliteProtocol.decodeNack(data), nack.streamID == streamID {
+                lock.lock()
+                nacksSeen += 1
+                receivedNack = true
+                let coversGap = UInt64(gapSequence) >= nack.missingSequence &&
+                                UInt64(gapSequence) < nack.missingSequence + UInt64(nack.count)
+                if coversGap { nackForGap = true }
+                lock.unlock()
+            } else if let stats = SatelliteProtocol.decodeStats(data), stats.streamID == streamID {
+                lock.lock()
+                receivedStats = true
+                lastStats = stats.stats
+                lock.unlock()
+            }
         }
         armReceive() // keep listening for the whole window
     }
@@ -90,10 +99,13 @@ let gapAcked = nackForGap
 lock.unlock()
 conn.cancel()
 
-print("sent \(sentFinal) packets over \(durationSeconds)s; NACKs received: \(nackSeen ? "yes" : "none")\(nackSeen && gapAcked ? " (gap-acknowledging)" : "")")
-if nackSeen && gapAcked {
-    print("E2E PASS: receiver decoded the stream and NACKed the injected gap")
+print("sent \(sentFinal) packets over \(durationSeconds)s; NACKs: \(nackSeen ? "yes" : "none")\(nackSeen && gapAcked ? " (gap-ack)" : ""); stats beacon: \(receivedStats ? "yes" : "no")\(receivedStats ? " (loss \(lastStats!.lossPermille)‰, jitter \(lastStats!.jitterDepthPackets) pk, buffer \(lastStats!.bufferedMs) ms)" : "")")
+if nackSeen && gapAcked && receivedStats {
+    print("E2E PASS: gap NACKed + stats beacon flowing")
     exit(0)
+} else if nackSeen && gapAcked {
+    print("E2E PARTIAL: NACK path OK but no stats beacon received")
+    exit(1)
 } else if nackSeen {
     print("E2E PARTIAL: NACKs arrived but none covered the injected gap")
     exit(1)
