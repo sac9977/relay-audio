@@ -1,3 +1,5 @@
+// macOS receiver app. The iOS receiver lives in Sources/RelaySatelliteIOS.
+#if os(macOS)
 import SwiftUI
 import AVFoundation
 import Network
@@ -646,3 +648,5 @@ private struct StatView: View {
         }
     }
 }
+
+#endif // os(macOS)

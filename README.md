@@ -14,6 +14,8 @@
 - **Silence Monitor** — auto-stop after 1–30 min of quiet source
 - **Live device tracking** — HAL listeners attach/detach sinks as devices appear and vanish, mid-stream
 - **Relay Satellite** — a companion receiver app for other Macs: raw Float32 PCM over UDP (bit-exact, no codec), NACK-based resend, loss concealment
+- **Bonjour discovery** — receivers advertise `_relay-sat._udp`; Relay finds them automatically (manual IP entry still works)
+- **iOS receiver** — same SatelliteKit protocol on iPhone, so a phone can join the sync group
 - **Menu bar mode**, per-output health stats, persisted preferences
 
 ## Build
@@ -27,9 +29,13 @@ cd relay-audio
 
 # Satellite receiver (dist/Relay Satellite.app)
 ./Scripts/build_satellite.sh
+
+# iOS receiver for the Simulator (dist/RelaySatelliteIOS.app)
+# --install also boots + installs + launches it on a booted iPhone simulator
+./Scripts/build_ios_satellite.sh --install
 ```
 
-Requirements: Xcode with the macOS 14.4+ SDK (built and tested on macOS 15+ / Apple Silicon).
+Requirements: Xcode with the macOS 14.4+ SDK (built and tested on macOS 15+ / Apple Silicon). The iOS receiver needs an iOS simulator runtime (built with the iOS 17+ SDK); for a real device, open the package in Xcode and run the `RelaySatelliteIOS` target with a development team.
 
 ## Running
 
@@ -72,7 +78,8 @@ defaults write com.apple.BluetoothAudioAgent "Negotiated Bitpool Max" -int 64
 
 - **`Sources/Relay/Core`** — process-tap capture, device/process scanning, sync-group sink engines, network sender
 - **`Sources/SatelliteKit`** — shared ring buffer + UDP wire protocol (`RLR1` packets, NACK resend)
-- **`Sources/RelaySatellite`** — the receiver app (jitter buffer, loss concealment, playback)
+- **`Sources/RelaySatellite`** — the macOS receiver app (jitter buffer, loss concealment, playback, menu-bar monitor)
+- **`Sources/RelaySatelliteIOS`** — the iOS receiver (same engine strategy, AVAudioSession-aware, UIKit-gated naming)
 - **`Sources/Relay/UI`** — SwiftUI interface, controller, menu bar panel
 
 ### Design notes
@@ -84,7 +91,7 @@ defaults write com.apple.BluetoothAudioAgent "Negotiated Bitpool Max" -int 64
 
 ## Status
 
-Working personal project — expect rough edges. Known gaps: AirPlay/Chromecast protocols aren't implemented directly (devices must already exist as system outputs), no Bonjour auto-discovery for Satellite yet, iOS receiver not started.
+Working personal project — expect rough edges. Known gaps: AirPlay/Chromecast protocols aren't implemented directly (devices must already exist as system outputs); the iOS *Simulator* can't advertise Bonjour to the LAN (simulator NAT limitation — install on a real iPhone for full discovery), and the phone must be on the same Wi-Fi network as the Mac.
 
 ## License
 

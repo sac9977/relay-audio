@@ -4,7 +4,8 @@ import PackageDescription
 let package = Package(
     name: "Relay",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
+        .iOS(.v17),
     ],
     targets: [
         .executableTarget(
@@ -16,6 +17,11 @@ let package = Package(
             name: "RelaySatellite",
             dependencies: ["SatelliteKit"],
             path: "Sources/RelaySatellite"
+        ),
+        .executableTarget(
+            name: "RelaySatelliteIOS",
+            dependencies: ["SatelliteKit"],
+            path: "Sources/RelaySatelliteIOS"
         ),
         .target(
             name: "SatelliteKit",
