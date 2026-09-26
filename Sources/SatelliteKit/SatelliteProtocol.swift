@@ -8,6 +8,9 @@ public enum SatelliteProtocol {
     public static let magic: UInt32 = 0x524C5231 // "RLR1"
     public static let version: UInt16 = 2
 
+    /// Bonjour service type. Receivers advertise this; senders browse for it.
+    public static let bonjourServiceType = "_relay-sat._udp"
+
     public static let samplesPerPacket = 1024          // frames per data packet
     public static let maxPacketsPerChunk = 16          // sender chunk pacing unit
     public static let pcmBytesPerFrame = 2 * 4         // stereo float32

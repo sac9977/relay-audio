@@ -601,7 +601,7 @@ private struct SatellitesCard: View {
             }
 
             if controller.receiverHosts.isEmpty {
-                EmptyHint(text: "No receivers yet. Run Relay Satellite on another Mac on your network, then add its IP here. Audio is sent as raw PCM — completely lossless.")
+                EmptyHint(text: "No receivers yet. Relay Satellite apps on your network appear below automatically — or add one by IP. Audio is sent as raw PCM — completely lossless.")
             } else {
                 ForEach(controller.receiverHosts, id: \.self) { host in
                     HStack(spacing: 8) {
@@ -631,6 +631,41 @@ private struct SatellitesCard: View {
                         }
                         .buttonStyle(.plain)
                         .help("Remove this receiver")
+                    }
+                }
+            }
+
+            // Bonjour-discovered receivers that aren't saved yet: one click to add.
+            let unsaved = controller.discoveredReceivers.filter { !controller.receiverHosts.contains($0.host) }
+            if !unsaved.isEmpty {
+                Text("Discovered on this network")
+                    .font(AppFont.size(11.5, .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                ForEach(unsaved) { receiver in
+                    HStack(spacing: 8) {
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .font(AppFont.size(12, .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                            .background(Color.secondary.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+                        Text(receiver.name).font(AppFont.size(15))
+                        Text(receiver.host)
+                            .font(AppFont.size(13).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer()
+                        Button {
+                            controller.addDiscoveredReceiver(receiver)
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(AppFont.size(14))
+                                .foregroundStyle(.teal)
+                                .frame(width: 26, height: 26)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Add this receiver")
                     }
                 }
             }

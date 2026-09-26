@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import AVFoundation
+import Network
 import os
 import SatelliteKit
 
@@ -94,6 +95,9 @@ final class RelayController: ObservableObject {
     @Published private(set) var textScale: AppFont.Scale = .comfortable
     /// Live network sink stats keyed by "net:<host>".
     @Published private(set) var networkStatsByUID: [String: NetworkSinkEngine.Stats] = [:]
+    /// Receivers found on the local network via Bonjour.
+    @Published private(set) var discoveredReceivers: [DiscoveredReceiver] = []
+    @Published private(set) var discoveryBrowsing = false
 
     static let autoStartKey = "autoStartOnLaunch"
     static let thisMacUID = "__thisMac"
@@ -111,6 +115,7 @@ final class RelayController: ObservableObject {
     private var ringByUID: [String: SPSCRing] = [:]
     private var deviceByUID: [String: AudioOutputDevice] = [:]
     private var meterTimer: Timer?
+    private let discovery = ReceiverDiscovery()
     private let log = Logger(subsystem: "app.relay", category: "controller")
 
     private let defaults = UserDefaults.standard
@@ -187,6 +192,7 @@ final class RelayController: ObservableObject {
 
         refreshDevices()
         installChangeListeners()
+        discovery.start()
 
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -200,6 +206,7 @@ final class RelayController: ObservableObject {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID.systemObject, &systemDevicesAddress, nil, deviceBlock)
             AudioObjectRemovePropertyListenerBlock(AudioObjectID.systemObject, &systemProcessesAddress, nil, processBlock)
         }
+        discovery.stop()
     }
 
     // MARK: Live device & process tracking
@@ -302,6 +309,11 @@ final class RelayController: ObservableObject {
     // MARK: Runtime stats polling
 
     private func pollRuntimeStats() {
+        // Bonjour discovery results (cheap; only publishes on change).
+        let snap = discovery.currentResults
+        if snap.receivers != discoveredReceivers { discoveredReceivers = snap.receivers }
+        if snap.browsing != discoveryBrowsing { discoveryBrowsing = snap.browsing }
+
         guard isStreaming else {
             if !healthByUID.isEmpty { healthByUID = [:] }
             if silenceSeconds != 0 { silenceSeconds = 0 }
@@ -409,6 +421,11 @@ final class RelayController: ObservableObject {
             startNetworkSink(host: trimmed)
             pushAllRingsToCapture()
         }
+    }
+
+    /// One-click add of a Bonjour-discovered receiver.
+    func addDiscoveredReceiver(_ receiver: DiscoveredReceiver) {
+        addReceiver(host: receiver.host)
     }
 
     func removeReceiver(host: String) {

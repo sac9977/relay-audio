@@ -56,6 +56,17 @@ final class SatelliteEngine {
 
     private let samplesPerPacket = SatelliteProtocol.samplesPerPacket
     private let concealAfterMs = 90.0
+
+    /// Stable Bonjour name for this receiver (the Mac's name). One service per
+    /// host: Bonjour auto-uniquifies duplicates ("name (2)") if needed.
+    static var serviceName: String {
+        Host.current().localizedName ?? "Relay Satellite"
+    }
+
+    private static func advertisedName() -> String {
+        let name = serviceName
+        return name.isEmpty ? "Relay Satellite" : name
+    }
     /// Playback rate; tracks the sample rate declared by incoming packets so
     /// a sender capturing at 44.1 kHz plays at 44.1 kHz (not pitch-shifted).
     private(set) var sampleRate: Double = SatelliteProtocol.samplesPerSecond
@@ -108,9 +119,17 @@ final class SatelliteEngine {
                 self.listening = (state == .ready)
                 self.publish()
             }
+
+            // Advertise on the local network so Relay can discover this
+            // receiver without the user typing an IP address.
+            listener.service = NWListener.Service(
+                name: Self.advertisedName(),
+                type: SatelliteProtocol.bonjourServiceType
+            )
+
             listener.start(queue: .global(qos: .userInitiated))
             self.listener = listener
-            log.info("Satellite listening on UDP \(SatelliteProtocol.defaultPort)")
+            log.info("Satellite listening on UDP \(SatelliteProtocol.defaultPort), advertised as \"\(Self.serviceName, privacy: .public)\"")
         } catch {
             log.error("Listener failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -362,6 +381,7 @@ final class SatelliteReceiver: ObservableObject {
 
 struct ReceiverView: View {
     @EnvironmentObject private var receiver: SatelliteReceiver
+    @State private var autoStarted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -449,11 +469,19 @@ struct ReceiverView: View {
 
             Spacer()
 
-            Text("Raw Float32 PCM over UDP — no codec, bit-exact. Add this Mac's IP in Relay's Satellite receivers section.")
+            Text("Raw Float32 PCM over UDP — no codec, bit-exact. Relay discovers this receiver automatically; it also appears as \"\(SatelliteEngine.serviceName)\" on the network.")
                 .font(AppFont.size(13))
                 .foregroundStyle(.secondary)
         }
         .padding(20)
+        .onAppear {
+            // A receiver should be ready to receive: start listening on
+            // launch (this also registers the Bonjour advertisement).
+            if !autoStarted {
+                autoStarted = true
+                receiver.startListening()
+            }
+        }
     }
 }
 
