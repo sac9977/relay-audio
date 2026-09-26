@@ -237,6 +237,13 @@ final class IOSReceiverEngine {
     private let samplesPerPacket = SatelliteProtocol.samplesPerPacket
     private let concealAfterMs = 90.0
     private(set) var sampleRate: Double = SatelliteProtocol.samplesPerSecond
+    /// Adaptive jitter buffer: depth in packets, driven by measured loss.
+    private var jitter = AdaptiveJitterBuffer(
+        packetsPerSecond: 48000.0 / Double(SatelliteProtocol.samplesPerPacket)
+    )
+    private var adaptiveDepth: Int = 2
+    private var lastAdaptiveUpdate: DispatchTime?
+    private var lastResendRequests = 0
 
     struct Snapshot {
         var listening = false
@@ -426,7 +433,8 @@ final class IOSReceiverEngine {
             return
         }
 
-        let bufferFrames = samplesPerPacket * 4
+        // Pump depth follows the adaptive jitter buffer (packets → frames).
+        let bufferFrames = samplesPerPacket * max(4, adaptiveDepth + 2)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(bufferFrames)) else {
             packetLock.unlock()
             return
@@ -488,6 +496,18 @@ final class IOSReceiverEngine {
 
         expectedSequence = seq
         packetLock.unlock()
+
+        // Adaptive jitter buffer: ~1 Hz decision cadence from resend deltas.
+        if let last = lastAdaptiveUpdate {
+            let dt = Double(DispatchTime.now().uptimeNanoseconds - last.uptimeNanoseconds) / 1e9
+            if dt >= 1.0 {
+                lastAdaptiveUpdate = DispatchTime.now()
+                adaptiveDepth = jitter.update(lostPackets: max(0, resendRequests - lastResendRequests), receivedPackets: receivedPackets, nowSeconds: dt)
+                lastResendRequests = resendRequests
+            }
+        } else {
+            lastAdaptiveUpdate = DispatchTime.now()
+        }
 
         if filled > 0 {
             buffer.frameLength = AVAudioFrameCount(filled)

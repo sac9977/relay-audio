@@ -55,6 +55,30 @@ guard let decodedOK = SatelliteProtocol.decodePairOK(pairOK) else {
 }
 assert(decodedOK == 987_654, "pairOK streamID mismatch")
 
+// Adaptive jitter buffer + loss estimator behavior.
+var adaptive = AdaptiveJitterBuffer(packetsPerSecond: 46.9) // 48k / 1024
+assert(adaptive.depthPackets == 2, "base depth should start at 2 packets")
+
+// A burst of 3 losses raises the depth.
+var depth1 = adaptive.update(lostPackets: 3, receivedPackets: 40, nowSeconds: 1.0)
+assert(depth1 == 3, "one loss cycle should raise depth by 1, got \(depth1)")
+var depth2 = adaptive.update(lostPackets: 2, receivedPackets: 44, nowSeconds: 1.0)
+assert(depth2 == 4, "second loss cycle should raise depth again, got \(depth2)")
+
+// Clean audio decays depth back down (1 packet per 10 s).
+for _ in 0..<15 {
+    _ = adaptive.update(lostPackets: 0, receivedPackets: 47, nowSeconds: 1.0)
+}
+assert(adaptive.depthPackets >= 2 && adaptive.depthPackets <= 4,
+       "depth should decay toward base after clean audio, got \(adaptive.depthPackets)")
+
+var estimator = LossEstimator(window: 20)
+for seq in UInt64(0)..<UInt64(10) { estimator.record(sequence: seq, receivedSequence: seq) }
+assert(abs(estimator.lossRate) < 0.0001, "no loss expected on a clean run")
+estimator.record(sequence: 13, receivedSequence: 9) // gap of 4
+assert(abs(estimator.lossRate - 4.0 / 21.0) < 0.01, "gap of 4 should register, got \(estimator.lossRate)")
+assert(estimator.currentBurstLength() == 4, "burst should equal the gap, got \(estimator.currentBurstLength())")
+
 // NACK round trip.
 let nack = SatelliteProtocol.encodeNack(streamID: 7, missingSequence: 12345, count: 8)
 guard let decodedNack = SatelliteProtocol.decodeNack(nack) else {
@@ -103,4 +127,4 @@ for i in 0..<samples.count where v1Samples[i] != samples[i] {
     exit(1)
 }
 
-print("PASS: v2 data packet (\(packet.count) B, 44.1 kHz declared) + v1 fallback (\(v1Packet.count) B → 48 kHz) + pair/NACK round-trips; samples bit-exact")
+print("PASS: v2 data packet + v1 fallback + pair/NACK round-trips + NetQ (adaptive jitter/loss) — samples bit-exact")

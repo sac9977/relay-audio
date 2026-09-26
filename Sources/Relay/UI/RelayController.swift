@@ -121,6 +121,8 @@ final class RelayController: ObservableObject {
     private var meterTimer: Timer?
     private let discovery = ReceiverDiscovery()
     private let bridge = BridgeAudioSource()
+    /// Per-sink fan-out rings for casted (bridge) sources, keyed by sink UID.
+    private var bridgeRingByUID: [String: BridgeFanOutRing] = [:]
     private let log = Logger(subsystem: "app.relay", category: "controller")
 
     private let defaults = UserDefaults.standard
@@ -582,6 +584,7 @@ final class RelayController: ObservableObject {
         for net in networkSinks { net.stop() }
         networkSinks = []
         bridge.stop()
+        bridgeRingByUID = [:]
         ringByUID = [:]
         level = 0
         healthByUID = [:]
@@ -633,11 +636,18 @@ final class RelayController: ObservableObject {
         // Phase 2: build sinks at that rate, then start pulling audio.
         sinks = []
         ringByUID = [:]
+        bridgeRingByUID = [:]
         for spec in sinkSpecs {
             let sink = SinkEngine(kind: spec.kind, uid: spec.uid, lowLatency: lowLatencyMode)
             sink.producerPosition = { [captureEngine] in
                 captureEngine.producerFramePosition()
             }
+            // Every sink also gets a bridge fan-out ring: when a source pairs,
+            // the cast plays through these same sinks (capture keeps flowing
+            // underneath; the source overrides via the source app's own mix).
+            let bridgeRing = BridgeFanOutRing(capacityFrames: 32768)
+            sink.attachBridgeRing(bridgeRing)
+            bridgeRingByUID[spec.uid] = bridgeRing
             do {
                 try sink.start(volume: masterVolume, sampleRate: captureRate)
                 sink.setUserVolume(speakerVolume(uid: spec.uid))
@@ -675,8 +685,9 @@ final class RelayController: ObservableObject {
         transportState = .streaming
 
         // Bridge: accept a 4-digit-coded source (iPhone / Satellite sender)
-        // while streaming. The code rotates every stream for freshness.
+        // while streaming and fan its audio out to every local sink above.
         pairingCode = Self.makePairingCode()
+        bridge.registerFanOutRings(Array(bridgeRingByUID.values))
         bridge.start(code: pairingCode)
     }
 

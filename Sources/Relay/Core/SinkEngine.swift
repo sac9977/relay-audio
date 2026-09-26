@@ -43,9 +43,28 @@ final class SinkEngine {
     let uid: String
     let lowLatency: Bool
     let ring: SPSCRing
+    /// Set when this sink fans out BRIDGE audio (a casted source) instead of
+    /// capture. The bridge ring has its own producer clock; when present it
+    /// takes priority in pump() and `producerPosition` is ignored.
+    private(set) var bridgeRing: BridgeFanOutRing?
+    /// Bridge active/idle tracking: when the cast ends (ring dry for 2 s),
+    /// the sink falls back to capture pumping automatically.
+    private var bridgeActive = false
+    private var bridgeIdleSince: DispatchTime?
+    private var bridgePrerolled = false
 
     /// Shared capture timeline — set by the controller before start.
     var producerPosition: () -> Int64 = { 0 }
+
+    /// Feeds this sink from a bridge fan-out ring (casted-source mode).
+    func attachBridgeRing(_ bridgeRing: BridgeFanOutRing) {
+        self.bridgeRing = bridgeRing
+    }
+
+    /// Returns to capture-driven pumping.
+    func detachBridgeRing() {
+        bridgeRing = nil
+    }
 
     private(set) var isRunning = false
     private var realUnderrunCount = 0
@@ -263,6 +282,30 @@ final class SinkEngine {
         guard let format = playFormat,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(maxChunkFrames)) else { return nil }
 
+        // Bridge fan-out mode: this sink plays a casted source while the
+        // bridge ring has audio; when it runs dry for 2 s the sink falls
+        // back to capture pumping (independent pre-roll states on both paths).
+        if let bridgeRing {
+            let bridgeDepth = bridgeRing.bufferedFrames
+            if bridgeDepth > 0 {
+                bridgeActive = true
+                bridgeIdleSince = nil
+            } else if bridgeActive {
+                if bridgeIdleSince == nil { bridgeIdleSince = DispatchTime.now() }
+                if let since = bridgeIdleSince,
+                   DispatchTime.now().uptimeNanoseconds - since.uptimeNanoseconds > 2_000_000_000 {
+                    bridgeActive = false
+                    bridgeIdleSince = nil
+                    bridgePrerolled = false
+                    log.info("Sink \(self.displayName, privacy: .public): cast ended — returning to capture")
+                }
+            }
+            if bridgeActive {
+                return makeBridgeBuffer(bridgeRing, format: format, buffer: buffer)
+            }
+            // else: fall through to capture path below
+        }
+
         let depth = ring.bufferedFrames
         let producerNow = producerPosition()
         let scheduledFrames = scheduledBuffers * pumpFrames
@@ -348,6 +391,90 @@ final class SinkEngine {
             log.info("Sink \(self.displayName, privacy: .public): ringDepth=\(depth) totalLatency=\(totalLatency) chunk=\(chunk) offset=\(Int(offset)) underruns=\(self.realUnderrunCount)")
         }
 
+        statsLock.lock()
+        currentHealth = SinkHealth(
+            ringDepth: depth,
+            latencyMs: Double(totalLatency) / activeSampleRate * 1000,
+            underruns: realUnderrunCount,
+            driftNudges: driftNudges,
+            syncOffsetFrames: Int(offset),
+            syncOffsetMs: Double(offset) / activeSampleRate * 1000
+        )
+        statsLock.unlock()
+
+        return buffer
+    }
+
+    // MARK: Bridge fan-out pumping
+
+    /// Depth-based pump for casted sources. Pre-rolls like capture mode, then
+    /// keeps the bridge ring near the target depth via chunk modulation.
+    private func makeBridgeBuffer(
+        _ bridgeRing: BridgeFanOutRing,
+        format: AVAudioFormat,
+        buffer: AVAudioPCMBuffer
+    ) -> AVAudioPCMBuffer? {
+        let depth = bridgeRing.bufferedFrames
+        let scheduledFrames = scheduledBuffers * pumpFrames
+        let totalLatency = depth + scheduledFrames
+        let target = Int64(effectiveTargetLatencyFrames)
+
+        if !bridgePrerolled {
+            guard depth >= target else {
+                if !prerollLogged, cyclesSinceStatsLog == 0 {
+                    prerollLogged = true
+                    log.info("Bridge sink \(self.displayName, privacy: .public) pre-rolling: \(depth)/\(target) frames")
+                }
+                return nil
+            }
+            bridgePrerolled = true
+            log.info("Bridge sink \(self.displayName, privacy: .public) pre-roll complete (\(depth) frames)")
+        }
+
+        let offset = Int64(totalLatency) - target
+        var chunk = pumpFrames
+        if depth > bridgeRing.capacityFrames - maxChunkFrames {
+            bridgeRing.reset() // packet backlog; drop instead of drifting late
+            log.warning("Bridge ring overflow on \(self.displayName, privacy: .public); dropped backlog")
+            return nil
+        } else if offset > Int64(pumpFrames) / 2 {
+            chunk = pumpFrames + driftStep
+            driftNudges += 1
+        } else if offset < -Int64(pumpFrames) / 2 && depth >= pumpFrames - driftStep {
+            chunk = pumpFrames - driftStep
+            driftNudges += 1
+        } else if depth < 512 {
+            chunk = pumpFrames / 4
+        }
+
+        var framesRead = 0
+        pumpStaging.withUnsafeMutableBufferPointer { staging in
+            guard let channelData = buffer.floatChannelData else { return }
+            let got = bridgeRing.read(into: staging.baseAddress!, frameCount: chunk)
+            let left = channelData[0]
+            let right = channelData[1]
+            for frame in 0..<got {
+                left[frame] = staging[frame * 2]
+                right[frame] = staging[frame * 2 + 1]
+            }
+            if got == 0 {
+                for frame in 0..<chunk {
+                    left[frame] = 0
+                    right[frame] = 0
+                }
+                buffer.frameLength = AVAudioFrameCount(chunk)
+                realUnderrunCount += 1
+            } else {
+                buffer.frameLength = AVAudioFrameCount(got)
+            }
+            framesRead = got
+        }
+
+        cyclesSinceStatsLog += 1
+        if cyclesSinceStatsLog >= 60 {
+            cyclesSinceStatsLog = 0
+            log.info("Bridge sink \(self.displayName, privacy: .public): depth=\(depth) chunk=\(chunk) underruns=\(self.realUnderrunCount)")
+        }
         statsLock.lock()
         currentHealth = SinkHealth(
             ringDepth: depth,

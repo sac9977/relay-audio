@@ -210,9 +210,20 @@ final class SatelliteEngine {
     private var resendRequests = 0
     private var bufferedMs: Double = 0
     private var lastDataAt: DispatchTime?
+    /// Adaptive jitter buffer: depth in packets, driven by measured loss.
+    private var jitter = AdaptiveJitterBuffer(
+        packetsPerSecond: 48000.0 / Double(SatelliteProtocol.samplesPerPacket)
+    )
+    private var adaptiveDepth: Int = 2
+    /// Packet-forwarding state for the loss estimator (last rx seq - 1).
+    private var lastContinuousSequence: UInt64?
 
     private let samplesPerPacket = SatelliteProtocol.samplesPerPacket
     private let concealAfterMs = 90.0
+    private let lossEstimatorLock = NSLock()
+    private var estimator = LossEstimator(window: 47)
+    private var lastAdaptiveUpdate: DispatchTime?
+    private var lastResendRequests = 0
 
     /// Stable Bonjour name for this receiver (the Mac's name). One service per
     /// host: Bonjour auto-uniquifies duplicates ("name (2)") if needed.
@@ -434,7 +445,8 @@ final class SatelliteEngine {
     /// Core pump: plays packets in sequence order, NACKs gaps, conceals
     /// unrecoverable loss after a grace period.
     private func pump() {
-        guard !stopped, let node = playerNode, let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else { return }
+        guard !stopped, let node = playerNode,
+              let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else { return }
 
         packetLock.lock()
         guard let expected = expectedSequence else {
@@ -443,7 +455,8 @@ final class SatelliteEngine {
             return
         }
 
-        let bufferFrames = samplesPerPacket * 4
+        // Pump depth follows the adaptive jitter buffer (packets → frames).
+        let bufferFrames = samplesPerPacket * max(4, adaptiveDepth + 2)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(bufferFrames)) else {
             packetLock.unlock()
             return
@@ -511,6 +524,21 @@ final class SatelliteEngine {
 
         expectedSequence = seq
         packetLock.unlock()
+
+        // Adaptive jitter buffer: ~1 Hz decision cadence from the estimator.
+        if let last = lastAdaptiveUpdate {
+            let dt = Double(DispatchTime.now().uptimeNanoseconds - last.uptimeNanoseconds) / 1e9
+            if dt >= 1.0 {
+                lastAdaptiveUpdate = DispatchTime.now()
+                lossEstimatorLock.lock()
+                _ = estimator.currentBurstLength()
+                adaptiveDepth = jitter.update(lostPackets: max(0, resendRequests - lastResendRequests), receivedPackets: receivedPackets, nowSeconds: dt)
+                lastResendRequests = resendRequests
+                lossEstimatorLock.unlock()
+            }
+        } else {
+            lastAdaptiveUpdate = DispatchTime.now()
+        }
 
         if filled > 0 {
             buffer.frameLength = AVAudioFrameCount(filled)
