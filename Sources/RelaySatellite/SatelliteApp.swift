@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Network
+import Darwin
 import os.log
 import SatelliteKit
 
@@ -21,6 +22,151 @@ struct SatelliteApp: App {
                 .id(receiver.textScale)
         }
         .windowResizability(.contentMinSize)
+
+        MenuBarExtra(
+            "Relay Satellite",
+            systemImage: receiver.isReceiving
+                ? "dot.radiowaves.left.and.right"
+                : "antenna.radiowaves.left.and.right"
+        ) {
+            MenuBarStatusView()
+                .environmentObject(receiver)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+// MARK: - Local address lookup
+
+/// Best local IPv4 address for display (prefers en* interfaces, skips loopback).
+func localIPAddress() -> String? {
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+    defer { freeifaddrs(ifaddr) }
+
+    var best: (priority: Int, ip: String)? = nil
+    var ptr: UnsafeMutablePointer<ifaddrs>? = first
+    while let p = ptr {
+        let entry = p.pointee
+        ptr = entry.ifa_next
+        guard let sockaddr = entry.ifa_addr,
+              sockaddr.pointee.sa_family == UInt8(AF_INET) else { continue }
+        let sin = sockaddr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+        var sinAddr = sin.sin_addr
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &sinAddr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
+        let ip = String(cString: buffer)
+        guard ip != "127.0.0.1" else { continue }
+
+        let name = String(cString: entry.ifa_name)
+        let priority: Int
+        if name.hasPrefix("en") { priority = 2 }        // Wi-Fi / Ethernet
+        else if name.hasPrefix("utun") { priority = 0 } // VPN tunnels
+        else { priority = 1 }
+        if best == nil || priority > best!.priority {
+            best = (priority, ip)
+        }
+    }
+    return best?.ip
+}
+
+// MARK: - Menu bar monitor
+
+struct MenuBarStatusView: View {
+    @EnvironmentObject private var receiver: SatelliteReceiver
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(LinearGradient(colors: [.teal, .green], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 22, height: 22)
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Relay Satellite").font(AppFont.size(14, .semibold))
+                    Text(receiver.isReceiving ? "Receiving audio" : (receiver.isListening ? "Listening" : "Stopped"))
+                        .font(AppFont.size(11.5))
+                        .foregroundStyle(receiver.isReceiving ? Color.green : Color.secondary)
+                }
+                Spacer()
+                Circle()
+                    .fill(receiver.isReceiving ? Color.green : (receiver.isListening ? Color.teal : Color.secondary.opacity(0.4)))
+                    .frame(width: 8, height: 8)
+            }
+
+            Divider()
+
+            row("On the network as", SatelliteEngine.serviceName)
+            row("Address", "\(localIPAddress() ?? "unknown") · port \(SatelliteProtocol.defaultPort)")
+            if let sender = receiver.senderDescription {
+                row("Sender", sender)
+            }
+
+            Divider()
+
+            HStack(spacing: 14) {
+                stat("packets", "\(receiver.receivedPackets)")
+                stat("concealed", "\(receiver.concealedFrames)")
+                stat("resend reqs", "\(receiver.resendRequests)")
+                stat("buffer", String(format: "%.0f ms", receiver.bufferedMs))
+            }
+
+            if receiver.sampleRateHz > 0 {
+                Text(String(format: "Playing at %.1f kHz", receiver.sampleRateHz / 1000))
+                    .font(AppFont.size(11.5))
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            Button {
+                if receiver.isListening {
+                    receiver.stopListening()
+                } else {
+                    receiver.startListening()
+                }
+            } label: {
+                Label(receiver.isListening ? "Stop Listening" : "Start Listening",
+                      systemImage: receiver.isListening ? "stop.fill" : "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(receiver.isListening ? .red : .teal)
+
+            Button("Quit Relay Satellite") {
+                NSApp.terminate(nil)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(4)
+        .frame(width: 280)
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(AppFont.size(11.5))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(AppFont.size(12))
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value)
+                .font(AppFont.size(14, .semibold).monospacedDigit())
+            Text(label)
+                .font(AppFont.size(10.5))
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -339,6 +485,10 @@ final class SatelliteReceiver: ObservableObject {
     @Published private(set) var sampleRateHz: Double = 0
     @Published private(set) var textScale: AppFont.Scale = .comfortable
     @Published var volume: Float = 1 { didSet { engine.setVolume(volume) } }
+
+    /// True while audio is actually flowing (buffer being drained), which is
+    /// what the menu-bar glyph keys off.
+    var isReceiving: Bool { bufferedMs > 0 }
 
     private let engine = SatelliteEngine()
     private var pollTimer: Timer?
