@@ -75,10 +75,23 @@ final class RelayController: ObservableObject {
     }
     /// Seconds of continuous silence so far (for the live countdown UI).
     @Published private(set) var silenceSeconds: Int = 0
+
+    /// Switches the shared UI text scale and notifies every open window.
+    func setTextScale(_ newScale: AppFont.Scale) {
+        textScale = newScale
+        AppFont.persist(newScale, defaultsKey: Keys.textScale)
+    }
     /// Relay Satellite receiver hosts (IPs), persisted.
     @Published var receiverHosts: [String] {
         didSet { persist() }
     }
+    /// Raise output devices running below 32 kHz to 48 kHz before streaming
+    /// (16 kHz output caps bandwidth at 8 kHz and sounds terrible).
+    @Published var enforce48k: Bool {
+        didSet { persist() }
+    }
+    /// UI text scale (compact / comfortable / large) shared with Relay Satellite.
+    @Published private(set) var textScale: AppFont.Scale = .comfortable
     /// Live network sink stats keyed by "net:<host>".
     @Published private(set) var networkStatsByUID: [String: NetworkSinkEngine.Stats] = [:]
 
@@ -111,7 +124,13 @@ final class RelayController: ObservableObject {
         static let silenceMonitorEnabled = "silenceMonitorEnabled"
         static let silenceTimeoutSeconds = "silenceTimeoutSeconds"
         static let receiverHosts = "receiverHosts"
+        static let enforce48k = "enforce48k"
+        static let textScale = "textScale"
     }
+
+    /// Outputs running at or below this rate get raised to 48 kHz.
+    static let lowRateThresholdHz: Double = 32_000
+    static let targetRateHz: Double = 48_000
 
     // Silence Monitor state. Peaks below this are treated as silence (~-66 dB).
     private let silenceThreshold: Float = 0.0005
@@ -150,6 +169,9 @@ final class RelayController: ObservableObject {
     }
 
     init() {
+        AppFont.activate(defaultsKey: Keys.textScale)
+        textScale = AppFont.scale
+
         let storedVolume = defaults.object(forKey: Keys.masterVolume) as? Float
         masterVolume = storedVolume ?? 1.0
 
@@ -161,6 +183,7 @@ final class RelayController: ObservableObject {
         enabledOutputUIDs = Set(defaults.stringArray(forKey: Keys.enabledOutputs) ?? [])
         selectedSourceObjectID = defaults.object(forKey: Keys.sourceObjectID) as? AudioObjectID
         receiverHosts = defaults.stringArray(forKey: Keys.receiverHosts) ?? []
+        enforce48k = defaults.object(forKey: Keys.enforce48k) as? Bool ?? true
 
         refreshDevices()
         installChangeListeners()
@@ -398,11 +421,46 @@ final class RelayController: ObservableObject {
     }
 
     private func startNetworkSink(host: String) {
-        let sink = NetworkSinkEngine(uid: "net:\(host)", host: host) { [captureEngine] in
+        let sink = NetworkSinkEngine(
+            uid: "net:\(host)",
+            host: host,
+            sampleRate: captureEngine.currentSampleRate ?? SatelliteProtocol.samplesPerSecond
+        ) { [captureEngine] in
             captureEngine.producerFramePosition()
         }
         sink.start()
         networkSinks.append(sink)
+    }
+
+    /// Raises output devices running at or below `lowRateThresholdHz` to
+    /// 48 kHz: every enabled output plus the current default output (the
+    /// capture point — the tap inherits its rate, so a 16 kHz default would
+    /// band-limit the whole chain). Called before capture starts. Non-fatal:
+    /// devices that refuse keep their rate.
+    private func enforceOutputRates() {
+        var targets: [(objectID: AudioObjectID, name: String)] = []
+        for uid in enabledOutputUIDs {
+            guard let device = deviceByUID[uid],
+                  let objectID = try? AudioObjectID.device(forUID: device.uid),
+                  objectID.isValidObject else { continue }
+            targets.append((objectID, device.name))
+        }
+        if let defaultOutput = try? AudioObjectID.defaultOutputDevice(), defaultOutput.isValidObject {
+            // May already be in the list — dedupe by object ID below.
+            targets.append((defaultOutput, "default output"))
+        }
+
+        var seen = Set<AudioObjectID>()
+        for target in targets where !seen.contains(target.objectID) {
+            seen.insert(target.objectID)
+            let rate = target.objectID.nominalSampleRate()
+            guard rate > 0, rate <= Self.lowRateThresholdHz else { continue }
+            if target.objectID.setNominalSampleRate(Self.targetRateHz) {
+                log.info("Raised \(target.name, privacy: .public) from \(Int(rate), privacy: .public) Hz to \(Int(Self.targetRateHz), privacy: .public) Hz")
+            } else {
+                log.warning("Could not raise \(target.name, privacy: .public) from \(Int(rate), privacy: .public) Hz — device refused; output will be band-limited")
+            }
+        }
     }
 
     private func pushAllRingsToCapture() {
@@ -515,6 +573,12 @@ final class RelayController: ObservableObject {
 
         transportState = .starting
 
+        // Phase 0: raise output devices stuck at a low rate (e.g. 16 kHz).
+        // Doing this BEFORE the tap keeps the whole chain full-band.
+        if enforce48k {
+            enforceOutputRates()
+        }
+
         // Phase 1: create the tap first so sinks can be built at the
         // capture rate (feeding them at the device rate would pitch-shift).
         let captureRate = try captureEngine.prepare(source: source, muteWhenTapped: muteSourceLocally)
@@ -585,6 +649,8 @@ final class RelayController: ObservableObject {
         defaults.set(lowLatencyMode, forKey: Keys.lowLatencyMode)
         defaults.set(silenceMonitorEnabled, forKey: Keys.silenceMonitorEnabled)
         defaults.set(silenceTimeoutSeconds, forKey: Keys.silenceTimeoutSeconds)
+        defaults.set(enforce48k, forKey: Keys.enforce48k)
+        defaults.set(textScale.rawValue, forKey: Keys.textScale)
         if let id = selectedSourceObjectID {
             defaults.set(Int(id), forKey: Keys.sourceObjectID)
         }

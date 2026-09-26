@@ -8,11 +8,17 @@ import SatelliteKit
 struct SatelliteApp: App {
     @StateObject private var receiver = SatelliteReceiver()
 
+    init() {
+        AppFont.activate(defaultsKey: "app.relay.satellite.textScale")
+    }
+
     var body: some Scene {
         WindowGroup("Relay Satellite") {
             ReceiverView()
                 .environmentObject(receiver)
-                .frame(minWidth: 400, minHeight: 280)
+                .frame(minWidth: 440, minHeight: 320)
+                // Re-renders (and thus re-reads AppFont.scale) on scale change.
+                .id(receiver.textScale)
         }
         .windowResizability(.contentMinSize)
     }
@@ -35,6 +41,7 @@ final class SatelliteEngine {
     private var senderDescription: String?
     private var lastSenderEndpoint: NWEndpoint?
     private var nackConnection: NWConnection?
+    private var currentVolume: Float = 1
 
     private let packetLock = NSLock()
     private var packetsBySequence: [UInt64: (producerFrame: UInt64, payload: Data)] = [:]
@@ -49,7 +56,9 @@ final class SatelliteEngine {
 
     private let samplesPerPacket = SatelliteProtocol.samplesPerPacket
     private let concealAfterMs = 90.0
-    private let sampleRate: Double = 48000
+    /// Playback rate; tracks the sample rate declared by incoming packets so
+    /// a sender capturing at 44.1 kHz plays at 44.1 kHz (not pitch-shifted).
+    private(set) var sampleRate: Double = SatelliteProtocol.samplesPerSecond
 
     struct Snapshot {
         var listening = false
@@ -58,6 +67,7 @@ final class SatelliteEngine {
         var concealed = 0
         var resends = 0
         var bufferedMs: Double = 0
+        var sampleRate: Double = 0
     }
 
     private let snapshotLock = NSLock()
@@ -69,7 +79,8 @@ final class SatelliteEngine {
             received: receivedPackets,
             concealed: concealedFrames,
             resends: resendRequests,
-            bufferedMs: bufferedMs
+            bufferedMs: bufferedMs,
+            sampleRate: sampleRate
         )
         snapshotLock.unlock()
     }
@@ -110,7 +121,8 @@ final class SatelliteEngine {
     }
 
     func setVolume(_ value: Float) {
-        playerNode?.volume = max(0, min(1, value))
+        currentVolume = max(0, min(1, value))
+        playerNode?.volume = currentVolume
     }
 
     func stop() {
@@ -139,11 +151,33 @@ final class SatelliteEngine {
         receiveLoop(on: connection)
     }
 
+    /// Switches playback to a new declared rate (first packet, or a sender
+    /// whose capture device changed rates). Flushes queued packets — their
+    /// samples belong to the old clock.
+    private func ensurePlaybackRate(_ newRate: Double) {
+        guard abs(newRate - sampleRate) > 1 else { return }
+        let oldRate = Int(sampleRate)
+        let newRateInt = Int(newRate)
+        log.info("Sender sample rate \(oldRate, privacy: .public) → \(newRateInt, privacy: .public) Hz; rebuilding playback engine")
+        sampleRate = newRate
+        playerNode?.stop()
+        packetLock.lock()
+        packetsBySequence.removeAll()
+        missingSince.removeAll()
+        expectedSequence = nil
+        packetLock.unlock()
+        startPlaybackEngine()
+        pumpQueue.async { [weak self] in self?.pump() }
+    }
+
     private func receiveLoop(on connection: NWConnection) {
         connection.receiveMessage { [weak self] data, _, _, error in
             guard let self, !self.stopped else { return }
             if let data, let header = SatelliteProtocol.decodeDataPacket(data) {
                 let payload = data.subdata(in: header.payloadRange)
+                if abs(header.sampleRate - self.sampleRate) > 1 {
+                    self.ensurePlaybackRate(header.sampleRate)
+                }
                 self.packetLock.lock()
                 if self.expectedSequence == nil { self.expectedSequence = header.sequence }
                 self.packetsBySequence[header.sequence] = (header.producerFrame, payload)
@@ -160,16 +194,25 @@ final class SatelliteEngine {
     }
 
     private func startPlaybackEngine() {
+        // Tear down any previous graph first — an AVAudioEngine must be fully
+        // stopped before its nodes can be reused in a new configuration.
+        playerNode?.stop()
+        engine?.stop()
+
         let engine = AVAudioEngine()
         let node = AVAudioPlayerNode()
         engine.attach(node)
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else { return }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
+            log.error("Could not create \(Int(self.sampleRate), privacy: .public) Hz playback format")
+            return
+        }
         engine.connect(node, to: engine.mainMixerNode, format: format)
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
+        node.volume = currentVolume
         do {
             try engine.start()
         } catch {
-            log.error("Engine failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Engine failed at \(Int(self.sampleRate), privacy: .public) Hz: \(error.localizedDescription, privacy: .public)")
             return
         }
         node.play()
@@ -274,6 +317,8 @@ final class SatelliteReceiver: ObservableObject {
     @Published private(set) var concealedFrames = 0
     @Published private(set) var resendRequests = 0
     @Published private(set) var bufferedMs: Double = 0
+    @Published private(set) var sampleRateHz: Double = 0
+    @Published private(set) var textScale: AppFont.Scale = .comfortable
     @Published var volume: Float = 1 { didSet { engine.setVolume(volume) } }
 
     private let engine = SatelliteEngine()
@@ -296,6 +341,11 @@ final class SatelliteReceiver: ObservableObject {
         refreshFromEngine()
     }
 
+    func setTextScale(_ newScale: AppFont.Scale) {
+        textScale = newScale
+        AppFont.persist(newScale, defaultsKey: "app.relay.satellite.textScale")
+    }
+
     private func refreshFromEngine() {
         let snap = engine.currentSnapshot
         isListening = snap.listening
@@ -304,6 +354,7 @@ final class SatelliteReceiver: ObservableObject {
         concealedFrames = snap.concealed
         resendRequests = snap.resends
         bufferedMs = snap.bufferedMs
+        sampleRateHz = snap.sampleRate
     }
 }
 
@@ -318,15 +369,17 @@ struct ReceiverView: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 9)
                         .fill(LinearGradient(colors: [.teal, .green], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 36, height: 36)
+                        .frame(width: 40, height: 40)
                     Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(AppFont.size(19, .semibold))
                         .foregroundStyle(.white)
                 }
                 VStack(alignment: .leading) {
-                    Text("Relay Satellite").font(.title3.weight(.semibold))
-                    Text(receiver.isListening ? "Listening on UDP \(SatelliteProtocol.defaultPort)" : "Idle")
-                        .font(.caption)
+                    Text("Relay Satellite").font(AppFont.size(22, .semibold))
+                    Text(receiver.isListening
+                         ? "Listening on UDP \(SatelliteProtocol.defaultPort)" + (receiver.sampleRateHz > 0 ? " · " + String(format: "%.1f kHz", receiver.sampleRateHz / 1000) : "")
+                         : "Idle")
+                        .font(AppFont.size(13))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -335,41 +388,69 @@ struct ReceiverView: View {
                     .frame(width: 9, height: 9)
             }
 
-            Button(receiver.isListening ? "Stop" : "Start Listening") {
+            Button {
                 if receiver.isListening {
                     receiver.stopListening()
                 } else {
                     receiver.startListening()
                 }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: receiver.isListening ? "stop.fill" : "play.fill")
+                        .font(AppFont.size(16, .bold))
+                    Text(receiver.isListening ? "Stop Listening" : "Start Listening")
+                        .font(AppFont.size(15, .semibold))
+                }
+                .frame(maxWidth: .infinity, minHeight: 34)
             }
             .buttonStyle(.borderedProminent)
             .tint(receiver.isListening ? .red : .teal)
 
             if let sender = receiver.senderDescription {
                 Label(sender, systemImage: "personalhotspot")
-                    .font(.callout)
+                    .font(AppFont.size(15))
                     .foregroundStyle(.secondary)
             }
 
             Divider()
 
-            HStack(spacing: 22) {
+            HStack(spacing: 18) {
                 StatView(label: "packets", value: "\(receiver.receivedPackets)")
-                StatView(label: "concealed frames", value: "\(receiver.concealedFrames)")
+                Spacer(minLength: 8)
+                StatView(label: "concealed", value: "\(receiver.concealedFrames)")
+                Spacer(minLength: 8)
                 StatView(label: "resend reqs", value: "\(receiver.resendRequests)")
+                Spacer(minLength: 8)
                 StatView(label: "buffer", value: String(format: "%.0f ms", receiver.bufferedMs))
             }
 
             HStack {
-                Image(systemName: "speaker.fill").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "speaker.fill").font(AppFont.size(13)).foregroundStyle(.secondary)
                 Slider(value: $receiver.volume, in: 0...1).tint(.teal)
-                Image(systemName: "speaker.wave.3.fill").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "speaker.wave.3.fill").font(AppFont.size(13)).foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("Text size")
+                    .font(AppFont.size(15))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { receiver.textScale },
+                    set: { receiver.setTextScale($0) }
+                )) {
+                    ForEach(AppFont.Scale.allCases, id: \.self) { scale in
+                        Text(scale.label).tag(scale)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
             }
 
             Spacer()
 
             Text("Raw Float32 PCM over UDP — no codec, bit-exact. Add this Mac's IP in Relay's Satellite receivers section.")
-                .font(.caption)
+                .font(AppFont.size(13))
                 .foregroundStyle(.secondary)
         }
         .padding(20)
@@ -382,8 +463,8 @@ private struct StatView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.system(size: 16, weight: .semibold).monospacedDigit())
-            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(AppFont.size(18, .semibold).monospacedDigit())
+            Text(label).font(AppFont.size(11.5)).foregroundStyle(.secondary)
         }
     }
 }

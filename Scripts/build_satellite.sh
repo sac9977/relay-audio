@@ -8,6 +8,9 @@ BUNDLE_ID="app.relay.satellite"
 APP_DIR="dist/${APP_NAME}.app"
 CONTENTS="${APP_DIR}/Contents"
 
+echo "==> Generating app icon"
+./Scripts/make_satellite_icns.sh >/dev/null
+
 echo "==> swift build RelaySatellite (release)"
 swift build -c release --product RelaySatellite
 
@@ -16,6 +19,7 @@ rm -rf "${APP_DIR}"
 mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
 
 cp .build/release/RelaySatellite "${CONTENTS}/MacOS/${APP_NAME}"
+cp "Assets/Satellite.icns" "${CONTENTS}/Resources/AppIcon.icns"
 
 cat > "${CONTENTS}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

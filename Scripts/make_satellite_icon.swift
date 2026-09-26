@@ -1,11 +1,11 @@
 import AppKit
 
-// Relay app icon generator.
-// Draws the 1024×1024 macOS icon artwork: a teal→green squircle (matching the
-// Satellite UI palette) with a white speaker cabinet and broadcast arcs
-// ("any app → every speaker").
-// Output: Assets/icon_1024.png (the .icns assembly happens in make_icns.sh
-// via sips + iconutil).
+// Relay Satellite app icon generator.
+// Draws the 1024×1024 macOS icon artwork: the same teal→green squircle as the
+// main Relay icon, with a white antenna mast and symmetric broadcast arcs —
+// the glyph used across the Satellite UI ("receiving from Relay").
+// Output: Assets/satellite_1024.png (assembled into an .icns by
+// Scripts/make_satellite_icns.sh, copied into the bundle by build_satellite.sh).
 
 let canvasSize = 1024
 let margin = 100
@@ -63,63 +63,54 @@ NSGradient(colors: [
     NSColor.white.withAlphaComponent(0.0),
 ])?.draw(in: squircle, angle: 90)
 
-// MARK: Glyph — speaker cabinet + broadcast arcs
-// Composition is centered as a whole: cabinet on the left, two bold arcs
-// sweeping out of the cone to the right. Arcs radiate from the cabinet's
-// center so they visually emanate from the driver, not float beside it.
-
-let midY = CGFloat(canvasSize) / 2
-let cabinetCenterX: CGFloat = 450
-let cabinetW: CGFloat = 260
-let cabinetH: CGFloat = 400
-let cabinetRect = NSRect(
-    x: cabinetCenterX - cabinetW / 2,
-    y: midY - cabinetH / 2,
-    width: cabinetW,
-    height: cabinetH
-)
+// MARK: Glyph — antenna mast + symmetric broadcast arcs
+// Same geometry language as SF's antenna.radiowaves.left.and.right: a rounded
+// mast with a circular tip, flanked by two arcs per side. Everything is drawn
+// from the canvas center so the composition stays balanced.
 
 cg.saveGState()
 cg.setShadow(offset: CGSize(width: 0, height: -8), blur: 12, color: NSColor.black.withAlphaComponent(0.25).cgColor)
 let white = NSColor.white.cgColor
 
-// Cabinet
+let midY = CGFloat(canvasSize) / 2
+let centerX = CGFloat(canvasSize) / 2
+
+// Antenna mast: a vertical rounded rectangle from below center up to the tip.
+let mastWidth: CGFloat = 46
+let mastBottom = midY - 190
+let mastTop = midY + 44
+let mastRect = NSRect(x: centerX - mastWidth / 2, y: mastBottom, width: mastWidth, height: mastTop - mastBottom)
 cg.setFillColor(white)
-cg.addPath(CGPath(roundedRect: cabinetRect, cornerWidth: 52, cornerHeight: 52, transform: nil))
+cg.addPath(CGPath(roundedRect: mastRect, cornerWidth: mastWidth / 2, cornerHeight: mastWidth / 2, transform: nil))
 cg.fillPath()
 
-// Woofer (lower): ring + center dot
-let wooferCenter = CGPoint(x: cabinetCenterX, y: midY - 72)
-cg.setLineWidth(16)
-cg.setStrokeColor(white)
-cg.addEllipse(in: CGRect(x: wooferCenter.x - 86, y: wooferCenter.y - 86, width: 172, height: 172))
-cg.strokePath()
-cg.setFillColor(white)
-cg.addEllipse(in: CGRect(x: wooferCenter.x - 42, y: wooferCenter.y - 42, width: 84, height: 84))
+// Antenna tip: filled circle capping the mast.
+let tipRadius: CGFloat = 52
+let tipCenter = CGPoint(x: centerX, y: mastTop + tipRadius * 0.55)
+cg.addEllipse(in: CGRect(x: tipCenter.x - tipRadius, y: tipCenter.y - tipRadius, width: tipRadius * 2, height: tipRadius * 2))
 cg.fillPath()
 
-// Tweeter (upper): ring + dot
-let tweeterCenter = CGPoint(x: cabinetCenterX, y: midY + 104)
-cg.setLineWidth(14)
-cg.setStrokeColor(white)
-cg.addEllipse(in: CGRect(x: tweeterCenter.x - 32, y: tweeterCenter.y - 32, width: 64, height: 64))
-cg.strokePath()
-cg.setFillColor(white)
-cg.addEllipse(in: CGRect(x: tweeterCenter.x - 11, y: tweeterCenter.y - 11, width: 22, height: 22))
+// Base: a subtle grounded ellipse under the mast (SF-style pedestal).
+let baseCenter = CGPoint(x: centerX, y: midY - 214)
+cg.addEllipse(in: CGRect(x: baseCenter.x - 120, y: baseCenter.y - 24, width: 240, height: 48))
 cg.fillPath()
 
-// Broadcast arcs radiating from the cabinet center (rightward sweep only;
-// the sweep angles keep every arc point clear of the cabinet body).
+// Broadcast arcs: two per side, radiating from the antenna tip. Arcs are
+// angular windows around horizontal so they hug the mast without crossing it.
 let arcs: [(radius: CGFloat, width: CGFloat, alpha: CGFloat)] = [
-    (220, 30, 1.0),
-    (315, 25, 0.62),
+    (205, 30, 1.0),
+    (310, 25, 0.62),
 ]
 for arc in arcs {
-    cg.setStrokeColor(NSColor.white.withAlphaComponent(arc.alpha).cgColor)
-    cg.setLineWidth(arc.width)
-    cg.setLineCap(.round)
-    cg.addArc(center: CGPoint(x: cabinetCenterX, y: midY), radius: arc.radius, startAngle: -0.62, endAngle: 0.62, clockwise: false)
-    cg.strokePath()
+    for direction in [false, true] { // right = counterclockwise 0°, left = mirrored
+        cg.setStrokeColor(NSColor.white.withAlphaComponent(arc.alpha).cgColor)
+        cg.setLineWidth(arc.width)
+        cg.setLineCap(.round)
+        let start: CGFloat = direction ? CGFloat.pi - 0.62 : -0.62
+        let end: CGFloat = direction ? CGFloat.pi + 0.62 : 0.62
+        cg.addArc(center: tipCenter, radius: arc.radius, startAngle: start, endAngle: end, clockwise: direction)
+        cg.strokePath()
+    }
 }
 
 cg.restoreGState()
@@ -135,7 +126,7 @@ guard let pngData = rep.representation(using: .png, properties: [:]) else {
 let fileManager = FileManager.default
 let outDir = URL(fileURLWithPath: "Assets")
 try? fileManager.createDirectory(at: outDir, withIntermediateDirectories: true)
-let outURL = outDir.appendingPathComponent("icon_1024.png")
+let outURL = outDir.appendingPathComponent("satellite_1024.png")
 do {
     try pngData.write(to: outURL)
     print("Wrote \(outURL.path)")

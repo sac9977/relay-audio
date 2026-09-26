@@ -7,6 +7,9 @@ struct AudioOutputDevice: Identifiable, Hashable {
     let uid: String
     let name: String
     let transportLabel: String
+    /// Nominal sample rate at scan time (Hz); informative only — a device's
+    /// live rate is read again when streaming starts.
+    let nominalSampleRate: Double
 
     var id: String { uid }
 }
@@ -32,7 +35,13 @@ enum OutputDeviceScanner {
             let name = (try? deviceID.readString(kAudioObjectPropertyName)) ?? "Unknown device"
             let transportType = (try? deviceID.readUInt32(kAudioDevicePropertyTransportType)) ?? 0
             devices.append(
-                AudioOutputDevice(objectID: deviceID, uid: uid, name: name, transportLabel: transportLabel(for: transportType))
+                AudioOutputDevice(
+                    objectID: deviceID,
+                    uid: uid,
+                    name: name,
+                    transportLabel: transportLabel(for: transportType),
+                    nominalSampleRate: deviceID.nominalSampleRate()
+                )
             )
         }
 

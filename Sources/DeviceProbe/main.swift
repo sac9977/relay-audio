@@ -37,6 +37,18 @@ func readString(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) ->
     return (cfString as String).isEmpty ? nil : (cfString as String)
 }
 
+func readAvailableRates(_ id: AudioObjectID) -> [AudioValueRange] {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyAvailableNominalSampleRates, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+    let count = Int(size) / MemoryLayout<AudioValueRange>.stride
+    var ranges = [AudioValueRange](repeating: AudioValueRange(mMinimum: 0, mMaximum: 0), count: count)
+    let status = ranges.withUnsafeMutableBufferPointer { buffer in
+        AudioObjectGetPropertyData(id, &address, 0, nil, &size, buffer.baseAddress!)
+    }
+    return status == noErr ? ranges : []
+}
+
 func deviceStreamCount(_ id: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
     var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: scope, mElement: kAudioObjectPropertyElementMain)
     var size: UInt32 = 0
@@ -98,6 +110,15 @@ for deviceID in deviceIDs {
     print("• \(name)")
     print("  uid: \(uid)")
     print("  transport: \(fourCC(transport)), output streams: \(outputStreams)")
+
+    let nominal: Float64 = readScalar(deviceID, kAudioDevicePropertyNominalSampleRate, default: Float64(0))
+    print("  nominal sample rate: \(Int(nominal)) Hz")
+    let rates = readAvailableRates(deviceID).map { range -> String in
+        range.mMinimum == range.mMaximum ? "\(Int(range.mMinimum))" : "\(Int(range.mMinimum))–\(Int(range.mMaximum))"
+    }.sorted { Int($0) ?? 0 < Int($1) ?? 0 }
+    if !rates.isEmpty {
+        print("  available rates: \(rates.joined(separator: ", "))")
+    }
 
     switch resolveUID(uid) {
     case let .success(resolved):

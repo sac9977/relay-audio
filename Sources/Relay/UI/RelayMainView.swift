@@ -1,4 +1,5 @@
 import SwiftUI
+import SatelliteKit
 
 /// Full window UI.
 struct RelayMainView: View {
@@ -16,6 +17,8 @@ struct RelayMainView: View {
             .padding(20)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        // Re-renders (and thus re-reads AppFont.scale) when the scale changes.
+        .id(controller.textScale)
     }
 }
 
@@ -28,19 +31,19 @@ private struct HeaderBar: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(LinearGradient(colors: [.teal, .green], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: 40, height: 40)
-                    .shadow(color: .indigo.opacity(0.35), radius: 5, y: 2)
+                    .shadow(color: .teal.opacity(0.35), radius: 5, y: 2)
                 Image(systemName: "hifispeaker.2.fill")
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(AppFont.size(21, .semibold))
                     .foregroundStyle(.white)
             }
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("Relay")
-                    .font(.title2.weight(.bold))
+                    .font(AppFont.size(26, .bold))
                 Text("Any app → every speaker")
-                    .font(.caption)
+                    .font(AppFont.size(13))
                     .foregroundStyle(.secondary)
             }
 
@@ -81,7 +84,7 @@ private struct StatusPill: View {
                 .frame(width: 7, height: 7)
                 .opacity(state == .streaming ? 0.75 : 1)
             Text(text)
-                .font(.caption.weight(.semibold))
+                .font(AppFont.size(13, .semibold))
                 .foregroundStyle(color)
         }
         .padding(.horizontal, 10)
@@ -106,20 +109,20 @@ private struct TransportCard: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: controller.isStreaming ? "stop.fill" : "play.fill")
-                        .font(.system(size: 14, weight: .bold))
+                        .font(AppFont.size(19, .bold))
                     Text(controller.isStreaming ? "Stop" : "Start Streaming")
-                        .font(.headline)
+                        .font(AppFont.size(22, .semibold))
                 }
-                .frame(maxWidth: .infinity, minHeight: 34)
+                .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.borderedProminent)
-            .tint(controller.isStreaming ? Color.red : Color.indigo)
+            .tint(controller.isStreaming ? Color.red : Color.teal)
             .disabled(controller.selectedSource == nil && !controller.isStreaming)
 
             if controller.isStreaming {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("INPUT LEVEL")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(AppFont.size(11, .bold))
                         .foregroundStyle(.secondary)
                     LevelMeter(level: controller.level)
                         .frame(height: 8)
@@ -184,7 +187,7 @@ private struct ProcessTile: View {
                                 .interpolation(.high)
                         } else {
                             Image(systemName: "app.fill")
-                                .font(.system(size: 26))
+                                .font(AppFont.size(28))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -200,19 +203,19 @@ private struct ProcessTile: View {
                 .frame(height: 42)
 
                 Text(process.name)
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                    .font(AppFont.size(12, isSelected ? .semibold : .regular))
                     .lineLimit(1)
-                    .frame(maxWidth: 66)
+                    .frame(maxWidth: 76)
             }
             .padding(.vertical, 8)
             .padding(.horizontal, 6)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(isSelected ? Color.indigo.opacity(0.14) : Color.secondary.opacity(0.05))
+                    .fill(isSelected ? Color.teal.opacity(0.14) : Color.secondary.opacity(0.05))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(isSelected ? Color.indigo : .clear, lineWidth: 1.5)
+                    .strokeBorder(isSelected ? Color.teal : .clear, lineWidth: 1.5)
             )
         }
         .buttonStyle(.plain)
@@ -298,7 +301,7 @@ private struct SyncScope: View {
     let names: [String: String]
     let toleranceMs: Double
 
-    private static let palette: [Color] = [.indigo, .orange, .green, .pink, .cyan, .yellow]
+    private static let palette: [Color] = [.teal, .orange, .mint, .pink, .cyan, .yellow]
 
     private var seriesKeys: [String] {
         history.keys.sorted()
@@ -319,10 +322,10 @@ private struct SyncScope: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "waveform.path.ecg.rectangle")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(AppFont.size(13, .semibold))
                     .foregroundStyle(.secondary)
                 Text("SYNC SCOPE")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(AppFont.size(12, .bold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 ForEach(seriesKeys, id: \.self) { uid in
@@ -330,11 +333,11 @@ private struct SyncScope: View {
                         HStack(spacing: 3) {
                             Circle().fill(color).frame(width: 6, height: 6)
                             Text(shortName(names[uid] ?? uid))
-                                .font(.caption2)
+                                .font(AppFont.size(11.5))
                                 .foregroundStyle(.secondary)
                             if let latest = history[uid]?.last {
                                 Text(String(format: "%+.1f ms", latest))
-                                    .font(.caption2.monospacedDigit().weight(.medium))
+                                    .font(AppFont.size(11.5).monospacedDigit().weight(.medium))
                                     .foregroundStyle(abs(latest) > toleranceMs ? Color.orange : Color.primary.opacity(0.75))
                             }
                         }
@@ -415,15 +418,15 @@ private struct OutputRow: View {
                         .fill(LinearGradient(colors: iconColors, startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 28, height: 28)
                     Image(systemName: icon)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(AppFont.size(15, .semibold))
                         .foregroundStyle(.white)
                 }
 
                 HStack(spacing: 6) {
-                    Text(title).font(.callout)
+                    Text(title).font(AppFont.size(15))
                     if let badge {
                         Text(badge)
-                            .font(.system(size: 8, weight: .bold))
+                            .font(AppFont.size(10, .bold))
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
@@ -443,9 +446,10 @@ private struct OutputRow: View {
                         controller.setSpeakerMuted(uid: uid, !controller.speakerMuted(uid: uid))
                     } label: {
                         Image(systemName: controller.speakerMuted(uid: uid) ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .font(.system(size: 12))
+                            .font(AppFont.size(16))
                             .foregroundStyle(controller.speakerMuted(uid: uid) ? Color.red : Color.secondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(controller.speakerMuted(uid: uid) ? "Unmute this output" : "Mute this output")
@@ -454,30 +458,30 @@ private struct OutputRow: View {
                         get: { controller.speakerVolume(uid: uid) },
                         set: { controller.setSpeakerVolume(uid: uid, $0) }
                     ), in: 0...1)
-                    .frame(width: 84)
+                    .frame(minWidth: 84, maxWidth: 100)
 
                     Button {
                         showingTrimPopover = true
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "timer")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(AppFont.size(12, .semibold))
                             Text(trimBadgeText)
-                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                                .font(AppFont.size(12, .semibold).monospacedDigit())
                         }
-                        .foregroundStyle(trimActive ? Color.indigo : (trimHovering ? Color.primary : Color.secondary))
+                        .foregroundStyle(trimActive ? Color.teal : (trimHovering ? Color.primary : Color.secondary))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(trimActive
-                                    ? Color.indigo.opacity(trimHovering ? 0.22 : 0.14)
+                                    ? Color.teal.opacity(trimHovering ? 0.22 : 0.14)
                                     : Color.secondary.opacity(trimHovering ? 0.16 : 0.08))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 6)
                                 .strokeBorder(
-                                    trimActive ? Color.indigo.opacity(0.55)
+                                    trimActive ? Color.teal.opacity(0.55)
                                                : Color.secondary.opacity(trimHovering ? 0.6 : 0.35),
                                     lineWidth: 1
                                 )
@@ -512,7 +516,7 @@ private struct OutputRow: View {
             if isEnabled, controller.isStreaming, let health = controller.healthByUID[uid],
                health.underruns > 0 || health.driftNudges > 0 {
                 Text("underruns \(health.underruns) · drift nudges \(health.driftNudges)")
-                    .font(.caption2.monospacedDigit())
+                    .font(AppFont.size(11.5).monospacedDigit())
                     .foregroundStyle(health.underruns > 20 ? Color.red : Color.secondary)
                     .padding(.leading, 38)
             }
@@ -563,8 +567,9 @@ private struct SatellitesCard: View {
                     showAddField.toggle()
                 } label: {
                     Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.indigo)
+                        .font(AppFont.size(18))                                .foregroundStyle(.teal)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Add a receiver by IP address")
@@ -579,11 +584,18 @@ private struct SatellitesCard: View {
                             newHost = ""
                             showAddField = false
                         }
-                    Button("Add") {
+                    Button {
                         controller.addReceiver(host: newHost)
                         newHost = ""
                         showAddField = false
+                    } label: {
+                        Text("Add")
+                            .font(.callout.weight(.semibold))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 7)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.teal)
                     .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
@@ -594,16 +606,16 @@ private struct SatellitesCard: View {
                 ForEach(controller.receiverHosts, id: \.self) { host in
                     HStack(spacing: 8) {
                         Image(systemName: "antenna.radiowaves.left.and.right")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(AppFont.size(14, .semibold))
                             .foregroundStyle(.white)
                             .frame(width: 24, height: 24)
                             .background(LinearGradient(colors: [.teal, .green], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 6))
-                        Text(host).font(.callout)
+                        Text(host).font(AppFont.size(15))
                         if let stats = controller.networkStatsByUID["net:\(host)"] {
                             HStack(spacing: 4) {
                                 Circle().fill(stats.connected ? Color.green : Color.red).frame(width: 6, height: 6)
                                 Text("\(stats.sent) sent · \(stats.resent) resent")
-                                    .font(.caption2.monospacedDigit())
+                                    .font(AppFont.size(11.5).monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -612,7 +624,10 @@ private struct SatellitesCard: View {
                             controller.removeReceiver(host: host)
                         } label: {
                             Image(systemName: "minus.circle")
+                                .font(AppFont.size(16))
                                 .foregroundStyle(.secondary)
+                                .frame(width: 26, height: 26)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .help("Remove this receiver")
@@ -645,39 +660,39 @@ private struct DelayTrimPopover: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Delay trim")
-                    .font(.headline)
+                    .font(AppFont.size(15, .semibold))
                 Text("Adds latency to \(speakerName) so it lines up with the slowest speaker. Use while listening to music with a sharp transient (drum hit).")
-                    .font(.caption)
+                    .font(AppFont.size(13))
                     .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 8) {
                 Text("0")
-                    .font(.caption2.monospacedDigit())
+                    .font(AppFont.size(11.5).monospacedDigit())
                     .foregroundStyle(.secondary)
                 Slider(value: binding, in: 0...300, step: 1)
-                    .tint(.indigo)
+                    .tint(.teal)
                 Text("300")
-                    .font(.caption2.monospacedDigit())
+                    .font(AppFont.size(11.5).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
 
             HStack {
                 Text(String(format: "%d ms", Int(controller.speakerDelayTrimMs(uid: uid))))
-                    .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(.indigo)
+                    .font(AppFont.size(17, .semibold).monospacedDigit())
+                    .foregroundStyle(.teal)
                 Spacer()
                 ForEach([0.0, 50, 100, 150, 200], id: \.self) { preset in
                     Button {
                         controller.setSpeakerDelayTrim(uid: uid, milliseconds: preset)
                     } label: {
                         Text(preset == 0 ? "off" : "\(Int(preset))")
-                            .font(.caption2.weight(.medium).monospacedDigit())
+                            .font(AppFont.size(11.5, .medium).monospacedDigit())
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
                             .background(
                                 abs(controller.speakerDelayTrimMs(uid: uid) - preset) < 0.5
-                                    ? Color.indigo.opacity(0.18)
+                                    ? Color.teal.opacity(0.18)
                                     : Color.secondary.opacity(0.1),
                                 in: Capsule()
                             )
@@ -687,6 +702,7 @@ private struct DelayTrimPopover: View {
             }
         }
         .padding(12)
+        .frame(width: 280)
     }
 }
 
@@ -699,7 +715,7 @@ private struct HealthPill: View {
                 .fill(color)
                 .frame(width: 6, height: 6)
             Text("\(Int(health.latencyMs)) ms")
-                .font(.caption2.monospacedDigit().weight(.medium))
+                .font(AppFont.size(11.5).monospacedDigit().weight(.medium))
                 .foregroundStyle(.primary.opacity(0.8))
         }
         .padding(.horizontal, 8)
@@ -730,15 +746,15 @@ private struct SettingsCard: View {
 
             HStack(spacing: 12) {
                 Image(systemName: "speaker.fill")
-                    .font(.system(size: 11))
+                    .font(AppFont.size(13))
                     .foregroundStyle(.secondary)
                 Slider(value: Binding(
                     get: { controller.masterVolume },
                     set: { controller.masterVolume = $0 }
                 ), in: 0...1)
-                .tint(.indigo)
+                .tint(.teal)
                 Image(systemName: "speaker.wave.3.fill")
-                    .font(.system(size: 11))
+                    .font(AppFont.size(13))
                     .foregroundStyle(.secondary)
             }
 
@@ -770,10 +786,19 @@ private struct SettingsCard: View {
                 )
             )
 
+            SettingToggle(
+                title: "Raise low-rate outputs to 48 kHz",
+                subtitle: "Devices set to 16 kHz (or lower) sound muffled — Relay switches them to 48 kHz before streaming starts",
+                isOn: Binding(
+                    get: { controller.enforce48k },
+                    set: { controller.enforce48k = $0 }
+                )
+            )
+
             if controller.silenceMonitorEnabled {
                 HStack {
                     Text("Stop after")
-                        .font(.callout)
+                        .font(AppFont.size(15))
                         .foregroundStyle(.secondary)
                     Picker("", selection: Binding(
                         get: { controller.silenceTimeoutSeconds },
@@ -785,18 +810,36 @@ private struct SettingsCard: View {
                         Text("30 min").tag(1800.0)
                     }
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 320)
+                    .frame(maxWidth: 360)
 
                     Spacer()
 
                     if controller.isStreaming, controller.silenceSeconds >= 2 {
                         Text("quiet for \(controller.silenceSeconds)s…")
-                            .font(.caption.monospacedDigit())
+                            .font(AppFont.size(13).monospacedDigit())
                             .foregroundStyle(.orange)
                     }
                 }
                 .padding(.leading, 34)
             }
+
+            HStack {
+                Text("Text size")
+                    .font(AppFont.size(15))
+                    .foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { controller.textScale },
+                    set: { controller.setTextScale($0) }
+                )) {
+                    ForEach(AppFont.Scale.allCases, id: \.self) { scale in
+                        Text(scale.label).tag(scale)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 280)
+                Spacer()
+            }
+            .padding(.leading, 34)
         }
         .cardStyle()
     }
@@ -812,9 +855,9 @@ private struct SettingToggle: View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.callout.weight(.medium))
+                    .font(AppFont.size(15, .medium))
                 Text(subtitle)
-                    .font(.caption)
+                    .font(AppFont.size(13))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -838,15 +881,15 @@ private struct SectionHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.indigo)
+                .font(AppFont.size(14, .semibold))
+                .foregroundStyle(.teal)
                 .frame(width: 22, height: 22)
-                .background(Color.indigo.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                .background(Color.teal.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
-                    .font(.headline)
+                    .font(AppFont.size(15, .semibold))
                 Text(subtitle)
-                    .font(.caption)
+                    .font(AppFont.size(13))
                     .foregroundStyle(.secondary)
             }
         }
@@ -858,7 +901,7 @@ private struct EmptyHint: View {
 
     var body: some View {
         Text(text)
-            .font(.callout)
+            .font(AppFont.size(15))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)

@@ -74,6 +74,28 @@ extension AudioObjectID {
         try readUInt32(selector) != 0
     }
 
+    /// Current nominal sample rate in Hz (0 if unreadable).
+    func nominalSampleRate() -> Double {
+        (try? readProperty(kAudioDevicePropertyNominalSampleRate, defaultValue: Float64(0))) ?? 0
+    }
+
+    /// Sets the device's nominal sample rate. Returns false if the device
+    /// refuses (some Bluetooth/transport devices reject rate changes while
+    /// running, and not every rate is in the device's supported list).
+    @discardableResult
+    func setNominalSampleRate(_ rate: Double) -> Bool {
+        var value = Float64(rate)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = withUnsafeMutableBytes(of: &value) { buffer in
+            AudioObjectSetPropertyData(self, &address, 0, nil, UInt32(MemoryLayout<Float64>.size), buffer.baseAddress!)
+        }
+        return status == noErr
+    }
+
     func readStreamCount(scope: AudioObjectPropertyScope) -> Int {
         guard let size = try? propertyDataSize(
             kAudioDevicePropertyStreams,

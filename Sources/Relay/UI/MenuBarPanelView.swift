@@ -1,4 +1,5 @@
 import SwiftUI
+import SatelliteKit
 
 /// Compact window-style MenuBarExtra panel: quick start/stop and the current
 /// source, with a button that opens the full window for configuration.
@@ -7,6 +8,13 @@ struct MenuBarPanelView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        panelBody
+            .font(AppFont.size(15))
+            // Re-reads AppFont.scale when the setting changes.
+            .id(controller.textScale)
+    }
+
+    private var panelBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: controller.isStreaming
@@ -16,22 +24,22 @@ struct MenuBarPanelView: View {
                     .fontWeight(.semibold)
                 Spacer()
             }
-            .font(.callout)
+            .font(AppFont.size(15))
 
             Divider()
 
             if let source = controller.selectedSource {
                 Text("Source: \(source.name)")
-                    .font(.callout)
+                    .font(AppFont.size(15))
                     .foregroundStyle(.secondary)
             } else {
                 Text("No source selected — open the window to pick an app.")
-                    .font(.callout)
+                    .font(AppFont.size(15))
                     .foregroundStyle(.secondary)
             }
 
             Text(controller.enabledOutputSummary)
-                .font(.caption)
+                .font(AppFont.size(13))
                 .foregroundStyle(.secondary)
 
             Button {
@@ -56,12 +64,25 @@ struct MenuBarPanelView: View {
 
             Divider()
 
+            Picker("Text size", selection: Binding(
+                get: { controller.textScale },
+                set: { controller.setTextScale($0) }
+            )) {
+                ForEach(AppFont.Scale.allCases, id: \.self) { scale in
+                    Text(scale.label).tag(scale)
+                }
+            }
+            .pickerStyle(.segmented)
+            .font(AppFont.size(13))
+
+            Divider()
+
             Button("Quit Relay") {
                 NSApp.terminate(nil)
             }
             .frame(maxWidth: .infinity)
         }
         .padding(4)
-        .frame(width: 260)
+        .frame(width: 280)
     }
 }

@@ -18,6 +18,10 @@ final class NetworkSinkEngine {
     private var stopped = true
     private(set) var isRunning = false
 
+    /// Capture rate this sink runs at; also declared in every data packet
+    /// header so the receiver paces playback correctly.
+    private(set) var sampleRate: Double = SatelliteProtocol.samplesPerSecond
+
     private let streamID: UInt32
     private var nextSequence: UInt64 = 0
     private var readPosition: Int64 = 0
@@ -45,9 +49,10 @@ final class NetworkSinkEngine {
 
     var displayName: String { "Satellite \(host)" }
 
-    init(uid: String, host: String, producerPosition: @escaping () -> Int64) {
+    init(uid: String, host: String, sampleRate: Double = SatelliteProtocol.samplesPerSecond, producerPosition: @escaping () -> Int64) {
         self.uid = uid
         self.host = host
+        self.sampleRate = sampleRate
         self.producerPosition = producerPosition
         self.ring = SPSCRing(capacityFrames: 32768)
         self.streamID = UInt32(arc4random())
@@ -102,7 +107,7 @@ final class NetworkSinkEngine {
         connection = nil
         isRunning = false
         let s = stats
-        log.info("Network sink stopped: \(self.host, privacy: .public) (sent \(s.sent), resent \(s.resent))")
+        log.info("Network sink stopped: \(self.host, privacy: .public) (sent \(s.sent), resent \(s.resent)) @ \(Int(self.sampleRate)) Hz")
     }
 
     private func receiveLoop() {
@@ -131,7 +136,8 @@ final class NetworkSinkEngine {
     private func pumpChunk() {
         guard !stopped else { return }
 
-        let target = 8192 // must cover the receiver's jitter buffer
+        // Pre-roll target in frames, scaled to this sink's rate (~171 ms).
+        let target = Int(8192.0 * sampleRate / SatelliteProtocol.samplesPerSecond)
         if !prerolled {
             guard ring.bufferedFrames >= target else {
                 pumpQueue.asyncAfter(deadline: .now() + 0.03) { [weak self] in
@@ -158,7 +164,8 @@ final class NetworkSinkEngine {
                         streamID: streamID,
                         sequence: nextSequence,
                         producerFrame: UInt64(readPosition - Int64(got)),
-                        payload: UnsafeRawBufferPointer(buffer)
+                        payload: UnsafeRawBufferPointer(buffer),
+                        sampleRate: sampleRate
                     )
                 }
                 : Data() // partial tail packet: not expected in steady state
@@ -182,8 +189,9 @@ final class NetworkSinkEngine {
         currentStats.resent = resentPackets
         statsLock.unlock()
 
-        // Pace: chunk = 16 × 1024 frames ≈ 21.3 ms @ 48 kHz
-        let chunkInterval = Double(chunkPackets * SatelliteProtocol.samplesPerPacket) / SatelliteProtocol.samplesPerSecond
+        // Pace: chunk = 16 × 1024 frames ≈ 21.3 ms @ 48 kHz, scaled to the
+        // capture rate so the sender runs exactly at real time.
+        let chunkInterval = Double(chunkPackets * SatelliteProtocol.samplesPerPacket) / sampleRate
         pumpQueue.asyncAfter(deadline: .now() + chunkInterval) { [weak self] in
             guard let self, !self.stopped else { return }
             self.pumpChunk()

@@ -10,7 +10,7 @@ struct RelayApp: App {
         WindowGroup(id: "main") {
             RelayMainView()
                 .environmentObject(controller)
-                .frame(minWidth: 460, minHeight: 540)
+                .frame(minWidth: 500, minHeight: 600)
         }
         .windowResizability(.contentMinSize)
 
